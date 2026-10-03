@@ -1,0 +1,181 @@
+# One container: llama-server :8080 + speaches STT/TTS :8000 (s6). Shared GPU.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llama-cpp
+  namespace: llm
+  labels:
+    app.kubernetes.io/name: llama-cpp
+    app.kubernetes.io/part-of: llm
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: llama-cpp
+  template:
+    metadata:
+      labels:
+        app: llama-cpp
+        app.kubernetes.io/name: llama-cpp
+        app.kubernetes.io/part-of: llm
+    spec:
+      runtimeClassName: nvidia
+      nodeSelector:
+        accelerator: nvidia
+      terminationGracePeriodSeconds: 60
+      initContainers:
+        - name: fetch-weights
+          image: python:3.12-slim-bookworm
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              pip install -q -U huggingface_hub
+              export HF_XET_HIGH_PERFORMANCE=1
+              export HF_HOME=/models/.hf
+              MODEL_DIR=/models/UD-IQ4_XS
+              SHARD1="$MODEL_DIR/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf"
+              SHARD2="$MODEL_DIR/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf"
+              SHARD3="$MODEL_DIR/Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf"
+              MMPROJ=/models/mmproj-F16.gguf
+              MTP_Q8=/models/MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf
+              if [ ! -f "$SHARD1" ] || [ ! -f "$SHARD2" ] || [ ! -f "$SHARD3" ] || [ ! -f "$MMPROJ" ]; then
+                python3 -c 'from huggingface_hub import snapshot_download; snapshot_download(repo_id="unsloth/Qwen3.8-Flash-Next-GGUF", local_dir="/models", allow_patterns=["UD-IQ4_XS/*", "mmproj-F16.gguf"])'
+              else
+                echo "main weights already present, skip download"
+              fi
+              if [ ! -f "$MTP_Q8" ]; then
+                python3 -c 'from huggingface_hub import snapshot_download; snapshot_download(repo_id="unsloth/Qwen3.8-Flash-Next-GGUF", local_dir="/models", allow_patterns=["MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"])'
+              else
+                echo "shared MTP Q8_0 already present, skip download"
+              fi
+              ls -lh "$MODEL_DIR" "$MMPROJ" /models/MTP
+          resources:
+            requests:
+              cpu: "2"
+              memory: 8Gi
+            limits:
+              cpu: "4"
+              memory: 16Gi
+          volumeMounts:
+            - name: model-cache
+              mountPath: /models
+        - name: fetch-bin
+          image: python:3.12-slim-bookworm
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              TAG=b10909-mix-bea84f7
+              URL=https://github.com/unslothai/llama.cpp/releases/download/${TAG}/app-${TAG}-linux-x64-cuda13-newer.tar.gz
+              BIN=/models/bin
+              mkdir -p "$BIN"
+              if [ -f "$BIN/UNSLOTH_TAG" ] && [ "$(cat "$BIN/UNSLOTH_TAG")" = "$TAG" ] && [ -x "$BIN/llama-server" ]; then
+                echo "unsloth llama-server $TAG already on PVC"
+              else
+                echo "fetching $URL"
+                apt-get update -qq
+                apt-get install -y -qq curl ca-certificates tar gzip
+                rm -rf "$BIN"
+                mkdir -p "$BIN"
+                curl -fL --retry 3 -o /tmp/app.tar.gz "$URL"
+                tar -xzf /tmp/app.tar.gz -C "$BIN"
+                rm -f /tmp/app.tar.gz
+                echo "$TAG" > "$BIN/UNSLOTH_TAG"
+                chmod +x "$BIN/llama-server" "$BIN/llama-bench"
+              fi
+              "$BIN/llama-server" --version || true
+              ls -lh "$BIN/llama-server" "$BIN/libggml-cuda.so"
+          resources:
+            requests:
+              cpu: "1"
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          volumeMounts:
+            - name: model-cache
+              mountPath: /models
+      containers:
+        - name: llm
+          image: llm-stack:v0.9.0-rc.3-3
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: speaches
+              containerPort: 8000
+          env:
+            - name: LLAMA_ATTN_ROT_DISABLE
+              value: "1"
+            - name: LLAMA_CACHE
+              value: /models/cache
+            - name: LLAMA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: llm-api-credentials
+                  key: api-key
+            - name: HF_HOME
+              value: /hf-cache
+            - name: LOG_LEVEL
+              value: info
+            - name: ENABLE_UI
+              value: "false"
+            - name: WHISPER__INFERENCE_DEVICE
+              value: cuda
+            - name: WHISPER__COMPUTE_TYPE
+              value: int8
+            - name: STT_MODEL_TTL
+              value: "-1"
+            - name: TTS_MODEL_TTL
+              value: "-1"
+            - name: UNSTABLE_ORT_OPTS__EXCLUDE_PROVIDERS
+              value: '["CUDAExecutionProvider"]'
+            - name: PRELOAD_MODELS
+              value: '["deepdml/faster-whisper-large-v3-turbo-ct2","speaches-ai/piper-pl_PL-darkman-medium"]'
+          securityContext:
+            capabilities:
+              add:
+                - IPC_LOCK
+          resources:
+            requests:
+              cpu: "12"
+              memory: 96Gi
+            limits:
+              cpu: "22"
+              memory: 110Gi
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: model-cache
+              mountPath: /models
+            - name: hf-cache
+              mountPath: /hf-cache
+          startupProbe:
+            exec:
+              command: ["/bin/sh", "/etc/s6-overlay/s6-rc.d/health-check"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 360
+          readinessProbe:
+            exec:
+              command: ["/bin/sh", "/etc/s6-overlay/s6-rc.d/health-check"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command: ["/bin/sh", "/etc/s6-overlay/s6-rc.d/health-check"]
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: llama-model-cache
+        - name: hf-cache
+          persistentVolumeClaim:
+            claimName: llama-hf-cache

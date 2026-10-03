@@ -1,0 +1,26 @@
+# k3s local-path: node disk. Need ≥125Gi free on the GPU node.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: llama-model-cache
+  namespace: llm
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 120Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: llama-hf-cache
+  namespace: llm
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi

@@ -1,0 +1,14 @@
+#!/command/with-contenv sh
+set -u
+fail=0
+# llama-server: /health is public (no API key required)
+curl -fsS --max-time 5 http://127.0.0.1:8080/health >/dev/null 2>&1 || {
+  echo "llama-server /health FAILED"
+  fail=1
+}
+# speaches: /health is public
+curl -fsS --max-time 5 http://127.0.0.1:8000/health >/dev/null 2>&1 || {
+  echo "speaches /health FAILED"
+  fail=1
+}
+exit $fail

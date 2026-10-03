@@ -1,0 +1,5 @@
+#!/command/with-contenv sh
+# Env (WHISPER__*, PRELOAD_MODELS, HF_HOME, …) comes from the pod spec.
+# model_aliases.json is loaded from CWD.
+cd /opt/speaches
+exec .venv/bin/uvicorn --factory speaches.main:create_app

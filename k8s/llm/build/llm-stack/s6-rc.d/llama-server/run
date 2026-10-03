@@ -1,0 +1,32 @@
+#!/command/with-contenv sh
+export LD_LIBRARY_PATH=/models/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+exec /models/bin/llama-server \
+  --host 0.0.0.0 --port 8080 \
+  --model /models/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf \
+  --mmproj /models/mmproj-F16.gguf \
+  --n-gpu-layers 999 \
+  --cpu-moe \
+  --ctx-size 204800 \
+  --image-min-tokens 1024 \
+  --fit off \
+  --batch-size 2048 \
+  --ubatch-size 256 \
+  --parallel 1 \
+  --flash-attn on \
+  --cache-type-k q4_0 \
+  --cache-type-v q4_0 \
+  --spec-draft-type-k q4_0 \
+  --spec-draft-type-v q4_0 \
+  --threads 12 \
+  --jinja --metrics --no-webui \
+  --load-mode mlock \
+  --no-context-shift \
+  --cache-ram 0 \
+  --ctx-checkpoints 8 \
+  --checkpoint-min-step 1024 \
+  --lazy-mode on \
+  --model-draft /models/MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf \
+  --spec-type draft-mtp \
+  --spec-draft-n-max 3 \
+  --spec-draft-ngl 999 \
+  --spec-draft-threads 12
