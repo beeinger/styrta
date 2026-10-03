@@ -155,7 +155,11 @@ pub async fn save_page(
     Ok(())
 }
 
-pub async fn list_innovations(pool: &PgPool, slug: Option<&str>) -> Result<Vec<InnovationRow>> {
+pub async fn list_innovations(
+    pool: &PgPool,
+    slug: Option<&str>,
+    failed_only: bool,
+) -> Result<Vec<InnovationRow>> {
     let rows = sqlx::query_as::<_, InnovationRow>(
         r#"
         SELECT id, slug, title, page_url,
@@ -164,10 +168,12 @@ pub async fn list_innovations(pool: &PgPool, slug: Option<&str>) -> Result<Vec<I
         FROM innovations
         WHERE source_key = 'rops'
           AND ($1::text IS NULL OR slug = $1 OR slug LIKE '%,' || $1)
+          AND ($2::bool = false OR (status = 'failed' AND digest_text IS NULL))
         ORDER BY slug
         "#,
     )
     .bind(slug)
+    .bind(failed_only)
     .fetch_all(pool)
     .await?;
     Ok(rows)

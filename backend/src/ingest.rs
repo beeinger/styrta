@@ -19,6 +19,7 @@ pub struct DigestOpts {
     pub concurrency: usize,
     pub limit: Option<usize>,
     pub force: bool,
+    pub failed_only: bool,
 }
 
 pub fn opts_from(
@@ -26,12 +27,14 @@ pub fn opts_from(
     concurrency: usize,
     limit: Option<usize>,
     force: bool,
+    failed_only: bool,
 ) -> DigestOpts {
     DigestOpts {
         slug,
         concurrency: concurrency.max(1),
         limit,
         force,
+        failed_only,
     }
 }
 
@@ -87,7 +90,7 @@ pub async fn digest(cfg: &Config, pool: &PgPool, opts: DigestOpts) -> Result<()>
     let work = PathBuf::from(&cfg.work_dir);
     std::fs::create_dir_all(&work)?;
 
-    let mut rows = db::list_innovations(&pool, opts.slug.as_deref()).await?;
+    let mut rows = db::list_innovations(&pool, opts.slug.as_deref(), opts.failed_only).await?;
     if rows.is_empty() {
         bail!("no innovations in the database; run `styrta ingest catalog` first");
     }
@@ -190,38 +193,25 @@ async fn digest_one(
         return finish(llm, pool, row.id, &detail, &row.page_url, &categories, None, None).await;
     };
 
-    if base_fresh && row.zip_etag.is_some() {
-        let probe = http
-            .get(&zip_url, row.zip_etag.as_deref(), None)
-            .await?;
-        if probe.status == reqwest::StatusCode::NOT_MODIFIED {
-            return Ok(Outcome::Skipped);
-        }
-        if probe.status.is_success() {
-            return digest_zip(
-                llm,
-                pool,
-                work,
-                &row,
-                &detail,
-                &categories,
-                &zip_url,
-                probe.bytes,
-                probe.etag,
-                probe.last_modified,
-                base_fresh,
-            )
-            .await;
-        }
+    let dir = work.join(row.slug.replace('/', "_"));
+    let _scratch = DirGuard::create(&dir)?;
+    let zip_path = dir.join("archive.zip");
+    let etag = if base_fresh {
+        row.zip_etag.as_deref()
+    } else {
+        None
+    };
+    let fetched = http.download(&zip_url, &zip_path, etag).await?;
+    if fetched.status == reqwest::StatusCode::NOT_MODIFIED {
+        return Ok(Outcome::Skipped);
+    }
+    if fetched.too_large {
         detail.intro = format!(
-            "{}\nArchiwum nie zostało pobrane (HTTP {}).",
-            detail.intro,
-            probe.status
+            "{}\nArchiwum ma {} bajtów i zostaje na stronie ROPS. Notatka jest ze strony.",
+            detail.intro, fetched.len
         );
         return finish(llm, pool, row.id, &detail, &row.page_url, &categories, None, None).await;
     }
-
-    let fetched = http.get(&zip_url, None, None).await?;
     if !fetched.status.is_success() {
         detail.intro = format!(
             "{}\nArchiwum nie zostało pobrane (HTTP {}).",
@@ -233,12 +223,12 @@ async fn digest_one(
     digest_zip(
         llm,
         pool,
-        work,
         &row,
-        &detail,
+        &mut detail,
         &categories,
-        &zip_url,
-        fetched.bytes,
+        &zip_path,
+        &fetched.sha256,
+        fetched.len,
         fetched.etag,
         fetched.last_modified,
         base_fresh,
@@ -249,35 +239,47 @@ async fn digest_one(
 async fn digest_zip(
     llm: &Llm,
     pool: &PgPool,
-    work: &PathBuf,
     row: &db::InnovationRow,
-    detail: &Detail,
+    detail: &mut Detail,
     categories: &[String],
-    zip_url: &str,
-    bytes: Vec<u8>,
+    zip_path: &std::path::Path,
+    sha: &str,
+    len: u64,
     etag: Option<String>,
     last_modified: Option<String>,
     base_fresh: bool,
 ) -> Result<Outcome> {
-    let sha = sha256_hex(&bytes);
-    if base_fresh && row.zip_sha256.as_deref() == Some(sha.as_str()) {
+    if base_fresh && row.zip_sha256.as_deref() == Some(sha) {
         return Ok(Outcome::Skipped);
     }
-    if bytes.len() > 200 * 1024 * 1024 {
-        bail!("{zip_url} is larger than 200MB");
-    }
-    let dir = work.join(row.slug.replace('/', "_"));
-    std::fs::create_dir_all(&dir)?;
-    let zip_path = dir.join("archive.zip");
-    std::fs::write(&zip_path, &bytes)?;
-    let scratch = dir.join("scratch");
+    let scratch = zip_path.with_file_name("scratch");
     std::fs::create_dir_all(&scratch)?;
-    let mut session = ArchiveSession::open(&zip_path, &scratch)?;
+    let mut session = match ArchiveSession::open(zip_path, &scratch) {
+        Ok(session) => session,
+        Err(err) => {
+            tracing::warn!(slug = row.slug, error = %err, "archive unreadable");
+            detail.intro = format!(
+                "{}\nArchiwum pobrano, ale nie dało się go otworzyć ({err:#}).",
+                detail.intro
+            );
+            return finish(
+                llm,
+                pool,
+                row.id,
+                detail,
+                &row.page_url,
+                categories,
+                Some(sha),
+                Some(len as i64),
+            )
+            .await;
+        }
+    };
     let docs = session.documents();
     tracing::info!(
         slug = row.slug,
         documents = docs.len(),
-        bytes = bytes.len(),
+        bytes = len,
         "archive indexed"
     );
     let digest = agent::run(llm, detail, &row.page_url, categories, Some(&mut session)).await?;
@@ -302,8 +304,8 @@ async fn digest_zip(
             json: &raw,
             agent_version: agent::AGENT_VERSION,
             model: llm.model(),
-            zip_sha256: Some(&sha),
-            zip_bytes: Some(bytes.len() as i64),
+            zip_sha256: Some(sha),
+            zip_bytes: Some(len as i64),
             zip_etag: etag.as_deref(),
             zip_last_modified: last_modified.as_deref(),
         },
@@ -311,8 +313,22 @@ async fn digest_zip(
         session.cached(),
     )
     .await?;
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(Outcome::Digested)
+}
+
+struct DirGuard(PathBuf);
+
+impl DirGuard {
+    fn create(path: &std::path::Path) -> Result<Self> {
+        std::fs::create_dir_all(path)?;
+        Ok(Self(path.to_path_buf()))
+    }
+}
+
+impl Drop for DirGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 async fn finish(
