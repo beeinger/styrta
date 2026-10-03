@@ -44,6 +44,7 @@ type Coordinates = {
 
 const MIN_ZOOM = 3;
 const MAX_ZOOM = 15;
+const PANEL_GAP = 8;
 
 const markers: MapMarker[] = visibleEvents.map((event) => ({
   id: event.id,
@@ -87,6 +88,7 @@ export function MapScreen() {
   const mapReadyRef = useRef(false);
   mapReadyRef.current = mapReady;
   const obstruction = sheetHeight || 168;
+  const mapBottom = chatTop || obstruction;
 
   const html = useMemo(() => {
     if (!startCamera) {
@@ -369,7 +371,7 @@ export function MapScreen() {
         <WebView
           ref={webViewRef}
           source={{ html, baseUrl: "https://localhost" }}
-          style={[styles.map, { bottom: chatTop || obstruction }]}
+          style={[styles.map, { bottom: mapBottom }]}
           onLayout={(event) => {
             const next = Math.round(event.nativeEvent.layout.height);
             if (next === mapFrameHeight.current) {
@@ -420,7 +422,7 @@ export function MapScreen() {
         </View>
       ) : null}
       <MapZoomControls
-        bottom={(chatTop || obstruction) + 12}
+        bottom={mapBottom + 12}
         canZoomIn={mapReady && zoom < MAX_ZOOM - 0.01}
         canZoomOut={mapReady && zoom > MIN_ZOOM + 0.01}
         canCenter={mapReady}
@@ -444,7 +446,7 @@ export function MapScreen() {
             tint="light"
             blurMethod="dimezisBlurView"
             pointerEvents="none"
-            style={StyleSheet.absoluteFill}
+            style={[styles.mapOverlay, { bottom: mapBottom }]}
           />
           <Pressable
             accessibilityRole="button"
@@ -453,7 +455,7 @@ export function MapScreen() {
               setEventsOpen(false);
               AccessibilityInfo.announceForAccessibility("Events closed");
             }}
-            style={styles.dismiss}
+            style={[styles.mapOverlay, { bottom: mapBottom }]}
           />
         </>
       ) : null}
@@ -463,8 +465,9 @@ export function MapScreen() {
         expanded={eventsOpen}
         onExpandedChange={setEventsOpen}
         top={insets.top + 12}
-        start={Math.max(16, startInset) / 2}
-        end={8}
+        bottom={mapBottom + PANEL_GAP}
+        start={Math.max(PANEL_GAP * 2, startInset) / 2}
+        end={PANEL_GAP}
         onFocusEvent={focusEvent}
       />
     </View>
@@ -510,8 +513,11 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#F2F2F7",
   },
-  dismiss: {
-    ...StyleSheet.absoluteFill,
+  mapOverlay: {
+    position: "absolute",
+    top: 0,
+    start: 0,
+    end: 0,
   },
   map: {
     ...StyleSheet.absoluteFill,

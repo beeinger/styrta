@@ -13,6 +13,7 @@ import { formatEventStart, type MeetupEvent } from "../data/events";
 type AttendingBubblesProps = {
   events: MeetupEvent[];
   top: number;
+  bottom: number;
   start: number;
   end: number;
   expanded: boolean;
@@ -23,6 +24,7 @@ type AttendingBubblesProps = {
 export function AttendingBubbles({
   events,
   top,
+  bottom,
   start,
   end,
   expanded,
@@ -50,7 +52,14 @@ export function AttendingBubbles({
   };
 
   return (
-    <View pointerEvents="box-none" style={[styles.anchor, { top, start, end }]}>
+    <View
+      pointerEvents="box-none"
+      style={[
+        styles.anchor,
+        { top, start, end },
+        expanded ? { bottom } : null,
+      ]}
+    >
       {expanded ? (
         <View
           accessibilityViewIsModal
@@ -222,8 +231,11 @@ const styles = StyleSheet.create({
     marginTop: "10%",
   },
   expanded: {
-    marginTop: "10%",
+    flex: 1,
+    minHeight: 0,
+    paddingTop: "10%",
     gap: 8,
+    justifyContent: "flex-start",
   },
   bubble: {
     width: 48,
@@ -268,8 +280,10 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   panel: {
+    flexGrow: 0,
+    flexShrink: 1,
+    minHeight: 0,
     alignSelf: "stretch",
-    maxHeight: 320,
     backgroundColor: "#FFFFFF",
     borderColor: "#1C1C1E",
     borderRadius: 16,
@@ -283,6 +297,7 @@ const styles = StyleSheet.create({
   },
   list: {
     flexGrow: 0,
+    flexShrink: 1,
   },
   listContent: {
     paddingVertical: 4,
