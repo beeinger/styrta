@@ -1,0 +1,112 @@
+[
+  {
+    "id": "arena-basketball",
+    "emoji": "🏀",
+    "title": "Pickup basketball",
+    "signedCount": 3,
+    "capacity": 5,
+    "latitude": 50.0751,
+    "longitude": 19.994,
+    "hostName": "Marek",
+    "startsAt": "2026-10-03T18:00:00+02:00"
+  },
+  {
+    "id": "arena-coffee",
+    "emoji": "☕",
+    "title": "Coffee walk",
+    "signedCount": 1,
+    "capacity": 3,
+    "latitude": 50.0666,
+    "longitude": 19.985,
+    "hostName": "Anna",
+    "startsAt": "2026-10-04T11:00:00+02:00"
+  },
+  {
+    "id": "arena-jam",
+    "emoji": "🎸",
+    "title": "Acoustic jam",
+    "signedCount": 2,
+    "capacity": 4,
+    "latitude": 50.0703,
+    "longitude": 19.9892,
+    "hostName": "Piotr",
+    "startsAt": "2026-10-04T19:30:00+02:00"
+  },
+  {
+    "id": "arena-run",
+    "emoji": "🏃",
+    "title": "Easy run",
+    "signedCount": 4,
+    "capacity": 4,
+    "latitude": 50.0662,
+    "longitude": 19.9945,
+    "hostName": "Ewa",
+    "startsAt": "2026-10-05T07:30:00+02:00"
+  },
+  {
+    "id": "arena-games",
+    "emoji": "🎲",
+    "title": "Board games",
+    "signedCount": 2,
+    "capacity": 5,
+    "latitude": 50.0689,
+    "longitude": 19.9965,
+    "hostName": "Jan",
+    "startsAt": "2026-10-05T18:00:00+02:00"
+  },
+  {
+    "id": "arena-volleyball",
+    "emoji": "🏐",
+    "title": "Beach volleyball",
+    "signedCount": 2,
+    "capacity": 4,
+    "latitude": 50.081,
+    "longitude": 19.989,
+    "hostName": "Kasia",
+    "startsAt": "2026-10-06T16:00:00+02:00"
+  },
+  {
+    "id": "arena-ride",
+    "emoji": "🚴",
+    "title": "Slow bike ride",
+    "signedCount": 1,
+    "capacity": 3,
+    "latitude": 50.0575,
+    "longitude": 19.982,
+    "hostName": "Tomek",
+    "startsAt": "2026-10-06T10:00:00+02:00"
+  },
+  {
+    "id": "arena-photos",
+    "emoji": "📸",
+    "title": "Photo walk",
+    "signedCount": 2,
+    "capacity": 5,
+    "latitude": 50.0718,
+    "longitude": 19.974,
+    "hostName": "Ola",
+    "startsAt": "2026-10-07T15:00:00+02:00"
+  },
+  {
+    "id": "arena-pizza",
+    "emoji": "🍕",
+    "title": "Pizza meetup",
+    "signedCount": 1,
+    "capacity": 2,
+    "latitude": 50.066,
+    "longitude": 20.0125,
+    "hostName": "Bartek",
+    "startsAt": "2026-10-07T19:00:00+02:00"
+  },
+  {
+    "id": "arena-stretch",
+    "emoji": "🧘",
+    "title": "Morning stretch",
+    "signedCount": 3,
+    "capacity": 5,
+    "latitude": 50.0568,
+    "longitude": 20.0045,
+    "hostName": "Magda",
+    "startsAt": "2026-10-08T08:00:00+02:00"
+  }
+]
