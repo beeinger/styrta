@@ -3,10 +3,12 @@ import {
   AccessibilityInfo,
   ActivityIndicator,
   I18nManager,
+  Keyboard,
   Platform,
   Pressable,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { BlurTargetView, BlurView } from "expo-blur";
@@ -340,6 +342,10 @@ export function MapScreen() {
       return;
     }
 
+    if (message.type === "marker-press" || message.type === "map-press") {
+      Keyboard.dismiss();
+    }
+
     if (message.type === "marker-press") {
       const marker = markers.find((item) => item.id === message.id);
       if (!marker) {
@@ -364,7 +370,17 @@ export function MapScreen() {
   };
 
   return (
-    <View style={styles.screen}>
+    <View
+      style={styles.screen}
+      onStartShouldSetResponderCapture={(event) => {
+        const focused = TextInput.State.currentlyFocusedInput();
+        if (focused == null || event.target === focused) {
+          return false;
+        }
+        Keyboard.dismiss();
+        return false;
+      }}
+    >
       <BlurTargetView
         ref={blurTargetRef}
         style={StyleSheet.absoluteFill}
