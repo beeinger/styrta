@@ -1,0 +1,52 @@
+[
+  {
+    "id": "arena-basketball",
+    "emoji": "🏀",
+    "title": "Pickup basketball",
+    "signedCount": 3,
+    "capacity": 5,
+    "latitude": 50.0751,
+    "longitude": 19.994,
+    "hostName": "Marek Zieliński"
+  },
+  {
+    "id": "arena-coffee",
+    "emoji": "☕",
+    "title": "Coffee walk",
+    "signedCount": 1,
+    "capacity": 3,
+    "latitude": 50.0666,
+    "longitude": 19.985,
+    "hostName": "Anna Kowalska"
+  },
+  {
+    "id": "arena-jam",
+    "emoji": "🎸",
+    "title": "Acoustic jam",
+    "signedCount": 2,
+    "capacity": 4,
+    "latitude": 50.0703,
+    "longitude": 19.9892,
+    "hostName": "Piotr Wójcik"
+  },
+  {
+    "id": "arena-run",
+    "emoji": "🏃",
+    "title": "Easy run",
+    "signedCount": 4,
+    "capacity": 4,
+    "latitude": 50.0662,
+    "longitude": 19.9945,
+    "hostName": "Ewa Lis"
+  },
+  {
+    "id": "arena-games",
+    "emoji": "🎲",
+    "title": "Board games",
+    "signedCount": 2,
+    "capacity": 5,
+    "latitude": 50.0689,
+    "longitude": 19.9965,
+    "hostName": "Jan Mazur"
+  }
+]

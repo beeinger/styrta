@@ -3,6 +3,10 @@ export type MapMarker = {
   latitude: number;
   longitude: number;
   title: string;
+  emoji: string;
+  hostName: string;
+  signedCount: number;
+  capacity: number;
 };
 
 export type MapPadding = {
@@ -60,20 +64,85 @@ export function createMapHtml(options: MapDocumentOptions): string {
         font-size: 11px;
       }
       .pin-wrap {
-        background: none;
-        border: none;
+        background: none !important;
+        border: none !important;
+        overflow: visible !important;
       }
-      .pin {
-        width: 28px;
-        height: 28px;
-        border-radius: 50% 50% 50% 0;
-        background: #1c1c1e;
-        border: 2px solid #ffffff;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.28);
-        transform: rotate(-45deg);
+      .event-marker {
+        position: relative;
+        width: 48px;
+        height: 48px;
       }
-      .pin-selected {
-        background: #0a84ff;
+      .event-bubble {
+        width: 48px;
+        height: 48px;
+        border-radius: 24px;
+        background: #ffffff;
+        border: 2px solid #1c1c1e;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.22);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 24px;
+        line-height: 1;
+      }
+      .event-marker.is-selected .event-bubble {
+        border-color: #0a84ff;
+      }
+      .event-card {
+        display: none;
+        position: absolute;
+        left: 50%;
+        bottom: calc(100% + 10px);
+        transform: translateX(-50%);
+        width: max-content;
+        max-width: 200px;
+        background: #ffffff;
+        border: 2px solid #1c1c1e;
+        border-radius: 16px;
+        padding: 10px 14px 12px;
+        text-align: center;
+        pointer-events: none;
+      }
+      .event-marker.is-selected .event-card {
+        display: block;
+      }
+      .event-card-tail {
+        position: absolute;
+        left: 50%;
+        bottom: -7px;
+        width: 12px;
+        height: 12px;
+        margin-left: -6px;
+        background: #ffffff;
+        border-right: 2px solid #1c1c1e;
+        border-bottom: 2px solid #1c1c1e;
+        transform: rotate(45deg);
+      }
+      .event-host,
+      .event-title,
+      .event-count {
+        margin: 0;
+        overflow-wrap: anywhere;
+      }
+      .event-host {
+        color: #636366;
+        font-size: 13px;
+        line-height: 18px;
+      }
+      .event-title {
+        margin-top: 2px;
+        color: #1c1c1e;
+        font-size: 16px;
+        font-weight: 600;
+        line-height: 22px;
+      }
+      .event-count {
+        margin-top: 4px;
+        color: #1c1c1e;
+        font-size: 15px;
+        font-weight: 600;
+        line-height: 20px;
       }
       .user-location {
         width: 18px;
@@ -168,10 +237,32 @@ export function createMapHtml(options: MapDocumentOptions): string {
           }
         }
 
+        function markerLabel(item) {
+          return (
+            item.title +
+            ", hosted by " +
+            item.hostName +
+            ", " +
+            item.signedCount +
+            " of " +
+            item.capacity +
+            " people"
+          );
+        }
+
         function setSelected(id) {
           selectedId = id;
-          document.querySelectorAll(".pin").forEach((element) => {
-            element.classList.toggle("pin-selected", element.dataset.id === id);
+          markerLayer.eachLayer((marker) => {
+            const selected = marker.eventId === id;
+            const element = marker.getElement();
+            const root = element && element.querySelector(".event-marker");
+            if (root) {
+              root.classList.toggle("is-selected", selected);
+            }
+            if (element) {
+              element.setAttribute("aria-expanded", selected ? "true" : "false");
+            }
+            marker.setZIndexOffset(selected ? 1000 : 0);
           });
         }
 
@@ -179,25 +270,62 @@ export function createMapHtml(options: MapDocumentOptions): string {
           markerLayer.clearLayers();
 
           markers.forEach((item) => {
-            const pin = document.createElement("div");
-            pin.className = "pin";
-            pin.dataset.id = String(item.id);
-            if (item.id === selectedId) {
-              pin.classList.add("pin-selected");
-            }
+            const selected = item.id === selectedId;
+            const label = markerLabel(item);
+            const root = document.createElement("div");
+            root.className = "event-marker" + (selected ? " is-selected" : "");
+
+            const card = document.createElement("div");
+            card.className = "event-card";
+            card.setAttribute("aria-hidden", "true");
+
+            const host = document.createElement("p");
+            host.className = "event-host";
+            host.textContent = item.hostName;
+
+            const title = document.createElement("p");
+            title.className = "event-title";
+            title.textContent = item.title;
+
+            const count = document.createElement("p");
+            count.className = "event-count";
+            count.textContent = item.signedCount + "/" + item.capacity;
+
+            const tail = document.createElement("div");
+            tail.className = "event-card-tail";
+            tail.setAttribute("aria-hidden", "true");
+
+            card.append(host, title, count, tail);
+
+            const bubble = document.createElement("div");
+            bubble.className = "event-bubble";
+            bubble.setAttribute("aria-hidden", "true");
+            bubble.textContent = item.emoji;
+
+            root.append(card, bubble);
 
             const icon = L.divIcon({
               className: "pin-wrap",
-              html: pin,
-              iconSize: [28, 36],
-              iconAnchor: [14, 36],
+              html: root,
+              iconSize: [48, 48],
+              iconAnchor: [24, 24],
             });
 
             const marker = L.marker([item.latitude, item.longitude], {
               icon: icon,
-              title: item.title,
+              title: label,
               keyboard: true,
-              alt: item.title,
+              alt: label,
+              zIndexOffset: selected ? 1000 : 0,
+            });
+            marker.eventId = item.id;
+            marker.on("add", () => {
+              const element = marker.getElement();
+              if (!element) {
+                return;
+              }
+              element.setAttribute("aria-label", label);
+              element.setAttribute("aria-expanded", selected ? "true" : "false");
             });
             marker.on("click", () => {
               suppressMapClick = true;
@@ -230,7 +358,7 @@ export function createMapHtml(options: MapDocumentOptions): string {
           },
           setMarkers: setMarkers,
           setSelected: setSelected,
-          setUserLocation(latitude, longitude, animate) {
+          setUserLocation(latitude, longitude) {
             const latLng = [latitude, longitude];
             if (!userMarker) {
               const dot = document.createElement("div");
@@ -246,17 +374,11 @@ export function createMapHtml(options: MapDocumentOptions): string {
                 interactive: false,
                 title: "Your location",
                 alt: "Your location",
-                zIndexOffset: 1000,
+                zIndexOffset: 500,
               }).addTo(map);
             } else {
               userMarker.setLatLng(latLng);
             }
-
-            appliedOffset = L.point(0, 0);
-            map.setView(latLng, Math.max(map.getZoom(), 14), {
-              animate: Boolean(animate),
-            });
-            applyPadding(false);
           },
         };
 

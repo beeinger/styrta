@@ -15,15 +15,18 @@ import * as Location from "expo-location";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 
+import { visibleEvents } from "../data/events";
 import { AiChatSheet } from "./AiChatSheet";
 import { createMapHtml, type MapMarker, type MapPadding } from "./mapDocument";
 import { MapZoomControls } from "./MapZoomControls";
 
-const FALLBACK_CAMERA = {
-  latitude: 37.78825,
-  longitude: -122.4324,
-  zoom: 13,
+const ARENA_CAMERA = {
+  latitude: 50.0683,
+  longitude: 19.9917,
+  zoom: 14,
 };
+
+const FALLBACK_CAMERA = ARENA_CAMERA;
 
 const USER_ZOOM = 14;
 
@@ -39,10 +42,18 @@ type Coordinates = {
 };
 
 const MIN_ZOOM = 3;
-const MAX_ZOOM = 18;
+const MAX_ZOOM = 15;
 
-// Add a pin by appending { id, latitude, longitude, title }. Tapping it shows the title.
-const markers: MapMarker[] = [];
+const markers: MapMarker[] = visibleEvents.map((event) => ({
+  id: event.id,
+  latitude: event.latitude,
+  longitude: event.longitude,
+  title: event.title,
+  emoji: event.emoji,
+  hostName: event.hostName,
+  signedCount: event.signedCount,
+  capacity: event.capacity,
+}));
 
 type MapMessage =
   | { type: "ready"; zoom: number }
@@ -58,7 +69,7 @@ export function MapScreen() {
   const announcedReady = useRef(false);
   const announcedLocation = useRef(false);
   const reduceMotionRef = useRef(false);
-  const [startCamera, setStartCamera] = useState<Camera | null>(null);
+  const [startCamera, setStartCamera] = useState<Camera | null>(ARENA_CAMERA);
   const [userLocation, setUserLocation] = useState<Coordinates | null>(null);
   const [zoom, setZoom] = useState(FALLBACK_CAMERA.zoom);
   const [sheetHeight, setSheetHeight] = useState(0);
@@ -239,7 +250,7 @@ export function MapScreen() {
       return;
     }
     run(
-      `window.__styrtaMap.setUserLocation(${userLocation.latitude}, ${userLocation.longitude}, ${reduceMotionRef.current ? "false" : "true"})`,
+      `window.__styrtaMap.setUserLocation(${userLocation.latitude}, ${userLocation.longitude})`,
     );
   }, [mapReady, userLocation]);
 
@@ -304,7 +315,9 @@ export function MapScreen() {
         return;
       }
       setSelectedMarker(marker);
-      AccessibilityInfo.announceForAccessibility(marker.title);
+      AccessibilityInfo.announceForAccessibility(
+        `${marker.title}, hosted by ${marker.hostName}, ${marker.signedCount} of ${marker.capacity} people`,
+      );
       return;
     }
 
@@ -390,23 +403,6 @@ export function MapScreen() {
           </Text>
         </Pressable>
       )}
-      {selectedMarker ? (
-        <View
-          accessible
-          accessibilityRole="text"
-          accessibilityLabel={selectedMarker.title}
-          style={[
-            styles.callout,
-            {
-              bottom: obstruction + 12,
-              start: Math.max(16, startInset),
-              end: controlClearance + 12,
-            },
-          ]}
-        >
-          <Text style={styles.calloutText}>{selectedMarker.title}</Text>
-        </View>
-      ) : null}
       <MapZoomControls
         bottom={obstruction + 12}
         canZoomIn={mapReady && zoom < MAX_ZOOM - 0.01}
@@ -474,21 +470,6 @@ const styles = StyleSheet.create({
     fontSize: 18,
     lineHeight: 26,
     textAlign: "center",
-  },
-  callout: {
-    position: "absolute",
-    backgroundColor: "#FFFFFF",
-    borderColor: "#1C1C1E",
-    borderRadius: 16,
-    borderWidth: 2,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-  },
-  calloutText: {
-    color: "#1C1C1E",
-    fontSize: 16,
-    fontWeight: "600",
-    lineHeight: 22,
   },
   locationButton: {
     position: "absolute",
