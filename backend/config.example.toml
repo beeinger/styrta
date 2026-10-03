@@ -1,0 +1,7 @@
+# Environment variables the binary reads. Put them in backend/.env (not committed).
+# OPENAI_API_KEY is not stored here. The process reads OPENAI_API_KEY, then LITELLM_MASTER_KEY.
+
+database_url = "postgres://styrta:password@127.0.0.1:5432/styrta"
+openai_base_url = "http://127.0.0.1:4000/v1"
+openai_model = "glm-5.3-flash"
+work_dir = "/tmp/styrta-ingest"
