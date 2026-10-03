@@ -17,6 +17,7 @@ type AttendingBubblesProps = {
   start: number;
   end: number;
   expanded: boolean;
+  concealed: boolean;
   onExpandedChange: (expanded: boolean) => void;
   onFocusEvent: (event: MeetupEvent) => void;
 };
@@ -28,6 +29,7 @@ export function AttendingBubbles({
   start,
   end,
   expanded,
+  concealed,
   onExpandedChange,
   onFocusEvent,
 }: AttendingBubblesProps) {
@@ -40,7 +42,7 @@ export function AttendingBubbles({
     }
   }, [onExpandedChange, visible.length]);
 
-  if (visible.length === 0) {
+  if (concealed || visible.length === 0) {
     return null;
   }
 

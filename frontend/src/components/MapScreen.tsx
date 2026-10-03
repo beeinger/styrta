@@ -85,6 +85,7 @@ export function MapScreen() {
   const [reduceMotion, setReduceMotion] = useState(false);
   const [selectedMarker, setSelectedMarker] = useState<MapMarker | null>(null);
   const [eventsOpen, setEventsOpen] = useState(false);
+  const [chatCoversEvents, setChatCoversEvents] = useState(false);
   const locating = useRef(false);
   const mapFrameHeight = useRef(0);
   const mapReadyRef = useRef(false);
@@ -384,7 +385,7 @@ export function MapScreen() {
       <BlurTargetView
         ref={blurTargetRef}
         style={StyleSheet.absoluteFill}
-        pointerEvents={eventsOpen ? "none" : "auto"}
+        pointerEvents={eventsOpen && !chatCoversEvents ? "none" : "auto"}
       >
       {html ? (
         <WebView
@@ -457,7 +458,7 @@ export function MapScreen() {
         }}
       />
       </BlurTargetView>
-      {eventsOpen ? (
+      {eventsOpen && !chatCoversEvents ? (
         <>
           <BlurView
             blurTarget={blurTargetRef}
@@ -478,10 +479,15 @@ export function MapScreen() {
           />
         </>
       ) : null}
-      <AiChatSheet onHeightChange={setSheetHeight} onTopChange={setChatTop} />
+      <AiChatSheet
+        onHeightChange={setSheetHeight}
+        onTopChange={setChatTop}
+        onExpandedWithKeyboardChange={setChatCoversEvents}
+      />
       <AttendingBubbles
         events={attendingEvents}
         expanded={eventsOpen}
+        concealed={chatCoversEvents}
         onExpandedChange={setEventsOpen}
         top={insets.top + 12}
         bottom={mapBottom + PANEL_GAP}
