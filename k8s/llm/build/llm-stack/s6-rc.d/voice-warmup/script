@@ -1,0 +1,71 @@
+#!/command/with-contenv sh
+# Post-start warmup for the voice stack. Runs once after speaches is up:
+#   1. waits for the speaches HTTP endpoint,
+#   2. downloads both models into the HF cache (PRELOAD_MODELS also does this,
+#      this is the belt to its braces),
+#   3. runs a dummy transcription so whisper's VRAM allocation is pinned from
+#      the start (a CUDA OOM later would take the whole container down),
+#   4. runs a dummy TTS synthesis to warm the Piper voice.
+# Failures here must not kill the container: the oneshot logs loudly and the
+# readiness probe (/health-check on both services) is the real gate.
+set -u
+
+WHISPER_MODEL="${WHISPER_MODEL:-deepdml/faster-whisper-large-v3-turbo-ct2}"
+PIPER_MODEL="${PIPER_MODEL:-speaches-ai/piper-pl_PL-darkman-medium}"
+SPEACHES_URL="http://127.0.0.1:8000"
+
+echo "[voice-warmup] waiting for speaches at ${SPEACHES_URL}/health ..."
+i=0
+until curl -fsS --max-time 5 "${SPEACHES_URL}/health" >/dev/null 2>&1; do
+  i=$((i + 1))
+  if [ "$i" -gt 120 ]; then
+    echo "[voice-warmup] ERROR: speaches /health not ready after 10 min"
+    exit 1
+  fi
+  sleep 5
+done
+echo "[voice-warmup] speaches is up"
+
+echo "[voice-warmup] pre-downloading models (skips instantly when cached)"
+curl -fsS --max-time 1800 -X POST "${SPEACHES_URL}/v1/models/${WHISPER_MODEL}" || echo "[voice-warmup] WARN: whisper pull failed (will retry via transcription)"
+curl -fsS --max-time 600 -X POST "${SPEACHES_URL}/v1/models/${PIPER_MODEL}" || echo "[voice-warmup] WARN: piper pull failed (will retry via speech)"
+
+echo "[voice-warmup] generating silence wav"
+python3 - <<'EOF'
+import wave, struct
+with wave.open("/tmp/voice-warmup.wav", "wb") as w:
+    w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+    w.writeframes(struct.pack("<h", 0) * 16000)
+EOF
+
+echo "[voice-warmup] dummy transcription (pins whisper VRAM)"
+ok=0
+for attempt in 1 2 3 4 5; do
+  if curl -fsS --max-time 300 -X POST "${SPEACHES_URL}/v1/audio/transcriptions" \
+      -F "file=@/tmp/voice-warmup.wav" -F "model=${WHISPER_MODEL}" \
+      -o /tmp/voice-warmup-stt.json; then
+    ok=1; break
+  fi
+  echo "[voice-warmup] transcription attempt ${attempt} failed, retrying in 15s"
+  sleep 15
+done
+[ "$ok" = "1" ] || echo "[voice-warmup] ERROR: dummy transcription failed — check speaches logs"
+cat /tmp/voice-warmup-stt.json 2>/dev/null || true
+
+echo "[voice-warmup] dummy TTS synthesis (darkman)"
+ok=0
+for attempt in 1 2 3 4 5; do
+  if curl -fsS --max-time 300 -X POST "${SPEACHES_URL}/v1/audio/speech" \
+      -H 'Content-Type: application/json' \
+      -d "{\"model\":\"${PIPER_MODEL}\",\"input\":\"Test syntezy mowy.\",\"voice\":\"darkman\",\"response_format\":\"wav\"}" \
+      -o /tmp/voice-warmup-tts.wav; then
+    ok=1; break
+  fi
+  echo "[voice-warmup] TTS attempt ${attempt} failed, retrying in 15s"
+  sleep 15
+done
+[ "$ok" = "1" ] || echo "[voice-warmup] ERROR: dummy TTS failed — check speaches logs"
+ls -la /tmp/voice-warmup-tts.wav 2>/dev/null || true
+
+echo "[voice-warmup] done"
+exit 0

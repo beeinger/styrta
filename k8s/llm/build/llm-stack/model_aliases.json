@@ -1,0 +1,5 @@
+{
+  "tts-1": "speaches-ai/piper-pl_PL-darkman-medium",
+  "tts-1-hd": "speaches-ai/piper-pl_PL-darkman-medium",
+  "whisper-1": "deepdml/faster-whisper-large-v3-turbo-ct2"
+}
