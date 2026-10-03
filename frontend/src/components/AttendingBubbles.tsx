@@ -153,6 +153,14 @@ function EventRow({ event, last, onFocus, onHide }: EventRowProps) {
   const when = formatEventStart(event.startsAt);
   return (
     <View style={[styles.row, !last && styles.rowDivider]}>
+      <Text
+        style={styles.rowEmoji}
+        maxFontSizeMultiplier={1.6}
+        importantForAccessibility="no"
+        accessibilityElementsHidden
+      >
+        {event.emoji}
+      </Text>
       <View
         accessible
         accessibilityLabel={`${event.hostName}, ${event.title}, ${when}, ${event.signedCount} of ${event.capacity} people`}
@@ -211,10 +219,10 @@ const styles = StyleSheet.create({
   },
   stack: {
     alignSelf: "flex-start",
-    marginTop: "20%",
+    marginTop: "10%",
   },
   expanded: {
-    marginTop: "20%",
+    marginTop: "10%",
     gap: 8,
   },
   bubble: {
@@ -245,6 +253,12 @@ const styles = StyleSheet.create({
     fontSize: 24,
     lineHeight: 30,
     textAlign: "center",
+  },
+  rowEmoji: {
+    fontSize: 24,
+    lineHeight: 30,
+    textAlign: "center",
+    width: 32,
   },
   closeGlyph: {
     color: "#1C1C1E",
