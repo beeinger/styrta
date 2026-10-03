@@ -52,6 +52,9 @@ struct DigestArgs {
     /// Run the agent again even when the archive hash matches.
     #[arg(long)]
     force: bool,
+    /// Only rows whose last digest failed and produced no text.
+    #[arg(long)]
+    failed: bool,
 }
 
 #[tokio::main]
@@ -77,13 +80,13 @@ async fn main() -> Result<()> {
                 ingest::digest(
                     &cfg,
                     &pool,
-                    ingest::opts_from(d.slug, d.concurrency, d.limit, d.force),
+                    ingest::opts_from(d.slug, d.concurrency, d.limit, d.force, d.failed),
                 )
                 .await?;
             }
             None => {
                 ingest::catalog(&cfg, &pool).await?;
-                ingest::digest(&cfg, &pool, ingest::opts_from(None, 2, None, false)).await?;
+                ingest::digest(&cfg, &pool, ingest::opts_from(None, 2, None, false, false)).await?;
             }
         },
     }

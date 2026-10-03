@@ -15,7 +15,7 @@ use std::path::Path;
 
 pub const AGENT_VERSION: i32 = 2;
 const READ_CHARS: usize = 7000;
-const MAX_ROUNDS: usize = 12;
+const MAX_ROUNDS: usize = 20;
 const MAX_READS: usize = 8;
 
 #[derive(Debug)]
@@ -56,7 +56,7 @@ impl ArchiveSession {
     }
 
     fn find(&self, path: &str) -> Option<&Entry> {
-        self.entries.iter().find(|e| e.path == path)
+        resolve_path(&self.entries, path)
     }
 
     pub async fn read(&mut self, path: &str, offset: usize) -> Result<String> {
@@ -107,7 +107,13 @@ pub async fn run(
     let tools = tools_schema();
     let mut had_text = false;
 
-    for _ in 0..MAX_ROUNDS {
+    for round in 0..MAX_ROUNDS {
+        if round + 3 == MAX_ROUNDS {
+            messages.push(json!({
+                "role": "user",
+                "content": "You are close to the step limit. Call submit_digest now with what you have. Do not read more files unless a required field is still empty.",
+            }));
+        }
         let reply = llm.chat(&messages, &tools).await?;
         if reply.tool_calls.is_empty() {
             messages.push(json!({
@@ -167,7 +173,10 @@ pub async fn run(
                     } else {
                         match parse_digest(&call.arguments, &docs, had_text) {
                             Ok(digest) => return Ok(digest),
-                            Err(err) => Err(err),
+                            Err(err) => {
+                                tracing::warn!(error = %err, "submit_digest rejected");
+                                Err(err)
+                            }
                         }
                     }
                 }
@@ -182,6 +191,19 @@ pub async fn run(
                 "tool_call_id": call.id,
                 "content": content,
             }));
+        }
+    }
+    messages.push(json!({
+        "role": "user",
+        "content": "Call submit_digest now. Do not call any other tool.",
+    }));
+    let force = json!({"type": "function", "function": {"name": "submit_digest"}});
+    if let Ok(reply) = llm.chat_forced(&messages, &tools, &force).await {
+        if let Some(call) = reply.tool_calls.iter().find(|c| c.name == "submit_digest") {
+            match parse_digest(&call.arguments, &docs, had_text) {
+                Ok(digest) => return Ok(digest),
+                Err(err) => tracing::warn!(error = %err, "forced submit_digest rejected"),
+            }
         }
     }
     bail!("agent did not call submit_digest");
@@ -261,9 +283,13 @@ fn parse_digest(
     if had_text && parsed.files_read.is_empty() {
         return Err("files_read is empty. List the paths you actually read.".into());
     }
+    let mut files_read = Vec::with_capacity(parsed.files_read.len());
     for path in &parsed.files_read {
-        if !docs.iter().any(|d| d.path == *path) {
+        let Some(entry) = resolve_path(docs, path) else {
             return Err(format!("files_read has an unknown path: {path}"));
+        };
+        if !files_read.iter().any(|have: &String| have == &entry.path) {
+            files_read.push(entry.path.clone());
         }
     }
     for (name, value) in [
@@ -284,10 +310,37 @@ fn parse_digest(
     Ok(Digest {
         title: parsed.title.trim().to_string(),
         knowledge_text: knowledge.to_string(),
-        files_read: parsed.files_read,
+        files_read,
         caveats: parsed.caveats.trim().to_string(),
         raw,
     })
+}
+
+fn resolve_path<'a>(entries: &'a [Entry], path: &str) -> Option<&'a Entry> {
+    let want = path.trim().trim_matches('"');
+    if let Some(entry) = entries.iter().find(|entry| entry.path == want) {
+        return Some(entry);
+    }
+    let fold = |value: &str| {
+        value
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .flat_map(|c| c.to_lowercase())
+            .collect::<String>()
+    };
+    let want_folded = fold(want);
+    let mut matches = entries.iter().filter(|entry| {
+        let folded = fold(&entry.path);
+        folded == want_folded
+            || folded.ends_with(want_folded.as_str())
+            || want_folded.ends_with(folded.as_str())
+    });
+    let found = matches.next()?;
+    if matches.next().is_some() {
+        None
+    } else {
+        Some(found)
+    }
 }
 
 fn window(path: &str, kind: Kind, extracted: &Extracted, offset: usize) -> String {

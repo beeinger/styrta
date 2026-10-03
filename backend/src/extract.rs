@@ -104,13 +104,13 @@ pub fn extract_entry(zip_path: &Path, entry: &Entry, scratch: &Path) -> Result<E
     if !entry.kind.readable() {
         bail!("not a text document");
     }
-    if entry.byte_len > 40 * 1024 * 1024 {
-        bail!("file is larger than 40MB");
+    if entry.byte_len > 128 * 1024 * 1024 {
+        bail!("file is larger than 128MB");
     }
     let file = File::open(zip_path)?;
     let mut archive = ZipArchive::new(file)?;
     let mut zf = archive.by_index(entry.index)?;
-    let mut bytes = Vec::with_capacity(entry.byte_len.min(40 * 1024 * 1024) as usize);
+    let mut bytes = Vec::with_capacity(entry.byte_len.min(128 * 1024 * 1024) as usize);
     zf.read_to_end(&mut bytes)?;
     let sha256 = hex::encode(Sha256::digest(&bytes));
     let text = match entry.kind {
