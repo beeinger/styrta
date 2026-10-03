@@ -11,12 +11,15 @@ import {
   Text,
   View,
 } from "react-native";
+import { BlurTargetView, BlurView } from "expo-blur";
 import * as Location from "expo-location";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 
-import { formatEventStart, visibleEvents } from "../data/events";
+import { formatEventStart, visibleEvents, type MeetupEvent } from "../data/events";
+import { attendingEvents } from "../data/session";
 import { AiChatSheet } from "./AiChatSheet";
+import { AttendingBubbles } from "./AttendingBubbles";
 import { createMapHtml, type MapMarker, type MapPadding } from "./mapDocument";
 import { MapZoomControls } from "./MapZoomControls";
 
@@ -67,6 +70,7 @@ type MapMessage =
 export function MapScreen() {
   const insets = useSafeAreaInsets();
   const webViewRef = useRef<WebView>(null);
+  const blurTargetRef = useRef<View>(null);
   const announcedReady = useRef(false);
   const announcedLocation = useRef(false);
   const reduceMotionRef = useRef(false);
@@ -78,6 +82,7 @@ export function MapScreen() {
   const [mapFailed, setMapFailed] = useState(false);
   const [reduceMotion, setReduceMotion] = useState(false);
   const [selectedMarker, setSelectedMarker] = useState<MapMarker | null>(null);
+  const [eventsOpen, setEventsOpen] = useState(false);
   const [locationPrompt, setLocationPrompt] = useState<
     "hidden" | "ask" | "settings"
   >("hidden");
@@ -264,6 +269,20 @@ export function MapScreen() {
     return () => clearTimeout(timer);
   }, [mapFailed, mapReady, startCamera]);
 
+  const focusEvent = (event: MeetupEvent) => {
+    const marker = markers.find((item) => item.id === event.id);
+    if (marker) {
+      setSelectedMarker(marker);
+    }
+    if (!mapReady) {
+      return;
+    }
+    run(
+      `window.__styrtaMap.centerOn(${event.latitude}, ${event.longitude}, ${reduceMotion ? "false" : "true"})`,
+    );
+    AccessibilityInfo.announceForAccessibility(`Showing ${event.title}`);
+  };
+
   const zoomBy = (direction: "in" | "out") => {
     if (!mapReady) {
       return;
@@ -332,6 +351,11 @@ export function MapScreen() {
 
   return (
     <View style={styles.screen}>
+      <BlurTargetView
+        ref={blurTargetRef}
+        style={StyleSheet.absoluteFill}
+        pointerEvents={eventsOpen ? "none" : "auto"}
+      >
       {html ? (
         <WebView
           ref={webViewRef}
@@ -411,7 +435,38 @@ export function MapScreen() {
         onZoomIn={() => zoomBy("in")}
         onZoomOut={() => zoomBy("out")}
       />
+      </BlurTargetView>
+      {eventsOpen ? (
+        <>
+          <BlurView
+            blurTarget={blurTargetRef}
+            intensity={50}
+            tint="light"
+            blurMethod="dimezisBlurView"
+            pointerEvents="none"
+            style={StyleSheet.absoluteFill}
+          />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Close your events"
+            onPress={() => {
+              setEventsOpen(false);
+              AccessibilityInfo.announceForAccessibility("Events closed");
+            }}
+            style={styles.dismiss}
+          />
+        </>
+      ) : null}
       <AiChatSheet onHeightChange={setSheetHeight} />
+      <AttendingBubbles
+        events={attendingEvents}
+        expanded={eventsOpen}
+        onExpandedChange={setEventsOpen}
+        top={insets.top + (locationPrompt === "hidden" ? 12 : 72)}
+        start={Math.max(16, startInset) / 2}
+        end={8}
+        onFocusEvent={focusEvent}
+      />
     </View>
   );
 
@@ -454,6 +509,9 @@ const styles = StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: "#F2F2F7",
+  },
+  dismiss: {
+    ...StyleSheet.absoluteFill,
   },
   map: {
     ...StyleSheet.absoluteFill,

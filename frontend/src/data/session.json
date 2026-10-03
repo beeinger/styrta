@@ -1,0 +1,12 @@
+{
+  "user": {
+    "id": "me",
+    "name": "Alex"
+  },
+  "attendingEventIds": [
+    "arena-basketball",
+    "arena-coffee",
+    "arena-jam",
+    "arena-games"
+  ]
+}
