@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: text-embeddings
+  namespace: embeddings
+  labels:
+    app.kubernetes.io/name: text-embeddings
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: text-embeddings
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

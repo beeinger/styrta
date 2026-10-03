@@ -1,0 +1,15 @@
+# Model files for the embeddings server. Cached across pod restarts.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: embeddings-model
+  namespace: embeddings
+  labels:
+    app.kubernetes.io/name: text-embeddings
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: longhorn-default
+  resources:
+    requests:
+      storage: 10Gi
