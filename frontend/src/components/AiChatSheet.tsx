@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import {
   AccessibilityInfo,
   Keyboard,
@@ -16,6 +16,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 type AiChatSheetProps = {
   onHeightChange: (height: number) => void;
   onTopChange: (offsetFromBottom: number) => void;
+  onExpandedWithKeyboardChange: (active: boolean) => void;
+  toggleRef: RefObject<View | null>;
 };
 
 type ChatMessage = {
@@ -26,7 +28,12 @@ type ChatMessage = {
 const BAR_HEIGHTS = [7, 13, 19, 13, 7];
 const CARD_PADDING_TOP = 4;
 
-export function AiChatSheet({ onHeightChange, onTopChange }: AiChatSheetProps) {
+export function AiChatSheet({
+  onHeightChange,
+  onTopChange,
+  onExpandedWithKeyboardChange,
+  toggleRef,
+}: AiChatSheetProps) {
   const insets = useSafeAreaInsets();
   const { height: windowHeight } = useWindowDimensions();
   const transcriptRef = useRef<ScrollView>(null);
@@ -38,6 +45,7 @@ export function AiChatSheet({ onHeightChange, onTopChange }: AiChatSheetProps) {
   const [draft, setDraft] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [keyboardInset, setKeyboardInset] = useState(0);
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
   const [reduceMotion, setReduceMotion] = useState(false);
 
   const halfScreen = Math.round(windowHeight * 0.5);
@@ -61,20 +69,31 @@ export function AiChatSheet({ onHeightChange, onTopChange }: AiChatSheetProps) {
   }, []);
 
   useEffect(() => {
-    if (Platform.OS !== "ios") {
-      return;
-    }
-    const show = Keyboard.addListener("keyboardWillShow", (event) => {
-      setKeyboardInset(event.endCoordinates.height);
+    const showEvent =
+      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvent =
+      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+    const show = Keyboard.addListener(showEvent, (event) => {
+      setKeyboardOpen(true);
+      if (Platform.OS === "ios") {
+        setKeyboardInset(event.endCoordinates.height);
+      }
     });
-    const hide = Keyboard.addListener("keyboardWillHide", () => {
-      setKeyboardInset(0);
+    const hide = Keyboard.addListener(hideEvent, () => {
+      setKeyboardOpen(false);
+      if (Platform.OS === "ios") {
+        setKeyboardInset(0);
+      }
     });
     return () => {
       show.remove();
       hide.remove();
     };
   }, []);
+
+  useEffect(() => {
+    onExpandedWithKeyboardChange(expanded && keyboardOpen);
+  }, [expanded, keyboardOpen, onExpandedWithKeyboardChange]);
 
   useEffect(() => {
     if (!expanded) {
@@ -151,6 +170,7 @@ export function AiChatSheet({ onHeightChange, onTopChange }: AiChatSheetProps) {
           }}
         >
           <Pressable
+            ref={toggleRef}
             accessibilityRole="button"
             accessibilityLabel={expanded ? "Minimize chat" : "Expand chat"}
             accessibilityHint={
@@ -256,6 +276,7 @@ export function AiChatSheet({ onHeightChange, onTopChange }: AiChatSheetProps) {
 function ChevronGlyph({ expanded }: { expanded: boolean }) {
   return (
     <View
+      pointerEvents="none"
       importantForAccessibility="no"
       accessibilityElementsHidden
       style={[styles.chevron, expanded ? styles.chevronDown : styles.chevronUp]}
