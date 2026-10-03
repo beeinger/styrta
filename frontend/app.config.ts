@@ -1,0 +1,17 @@
+import type { ConfigContext, ExpoConfig } from 'expo/config';
+
+export default ({ config }: ConfigContext): ExpoConfig => {
+  return {
+    ...config,
+    name: config.name ?? 'styrta',
+    slug: config.slug ?? 'styrta',
+    ios: {
+      ...config.ios,
+      bundleIdentifier: 'com.styrta.app',
+    },
+    android: {
+      ...config.android,
+      package: 'com.styrta.app',
+    },
+  };
+};
