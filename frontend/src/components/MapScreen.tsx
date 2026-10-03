@@ -15,7 +15,7 @@ import * as Location from "expo-location";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 
-import { visibleEvents } from "../data/events";
+import { formatEventStart, visibleEvents } from "../data/events";
 import { AiChatSheet } from "./AiChatSheet";
 import { createMapHtml, type MapMarker, type MapPadding } from "./mapDocument";
 import { MapZoomControls } from "./MapZoomControls";
@@ -53,6 +53,7 @@ const markers: MapMarker[] = visibleEvents.map((event) => ({
   hostName: event.hostName,
   signedCount: event.signedCount,
   capacity: event.capacity,
+  startsAtLabel: formatEventStart(event.startsAt),
 }));
 
 type MapMessage =
@@ -316,7 +317,7 @@ export function MapScreen() {
       }
       setSelectedMarker(marker);
       AccessibilityInfo.announceForAccessibility(
-        `${marker.title}, hosted by ${marker.hostName}, ${marker.signedCount} of ${marker.capacity} people`,
+        `${marker.title}, ${marker.startsAtLabel}, hosted by ${marker.hostName}, ${marker.signedCount} of ${marker.capacity} people`,
       );
       return;
     }

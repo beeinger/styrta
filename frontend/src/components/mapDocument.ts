@@ -7,6 +7,7 @@ export type MapMarker = {
   hostName: string;
   signedCount: number;
   capacity: number;
+  startsAtLabel: string;
 };
 
 export type MapPadding = {
@@ -121,6 +122,7 @@ export function createMapHtml(options: MapDocumentOptions): string {
       }
       .event-host,
       .event-title,
+      .event-time,
       .event-count {
         margin: 0;
         overflow-wrap: anywhere;
@@ -136,6 +138,12 @@ export function createMapHtml(options: MapDocumentOptions): string {
         font-size: 16px;
         font-weight: 600;
         line-height: 22px;
+      }
+      .event-time {
+        margin-top: 2px;
+        color: #636366;
+        font-size: 13px;
+        line-height: 18px;
       }
       .event-count {
         margin-top: 4px;
@@ -240,6 +248,8 @@ export function createMapHtml(options: MapDocumentOptions): string {
         function markerLabel(item) {
           return (
             item.title +
+            ", " +
+            item.startsAtLabel +
             ", hosted by " +
             item.hostName +
             ", " +
@@ -287,6 +297,10 @@ export function createMapHtml(options: MapDocumentOptions): string {
             title.className = "event-title";
             title.textContent = item.title;
 
+            const time = document.createElement("p");
+            time.className = "event-time";
+            time.textContent = item.startsAtLabel;
+
             const count = document.createElement("p");
             count.className = "event-count";
             count.textContent = item.signedCount + "/" + item.capacity;
@@ -295,7 +309,7 @@ export function createMapHtml(options: MapDocumentOptions): string {
             tail.className = "event-card-tail";
             tail.setAttribute("aria-hidden", "true");
 
-            card.append(host, title, count, tail);
+            card.append(host, title, time, count, tail);
 
             const bubble = document.createElement("div");
             bubble.className = "event-bubble";
