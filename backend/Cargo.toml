@@ -4,23 +4,47 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "styrta"
 path = "src/main.rs"
 
+[[bin]]
+name = "serve"
+path = "src/bin/serve.rs"
+
 [dependencies]
 anyhow = "1"
+async-trait = "0.1"
+axum = { version = "0.8", features = ["json", "multipart"] }
+bytes = "1"
+chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 dotenvy = "0.15"
 encoding_rs = "0.8"
+futures = "0.3"
 hex = "0.4"
-reqwest = { version = "0.12", features = ["json", "gzip"] }
+jsonwebtoken = "9"
+pgvector = { version = "0.4", features = ["sqlx"] }
+reqwest = { version = "0.12", features = ["json", "gzip", "multipart", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "json", "migrate", "derive"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "json", "migrate", "derive", "chrono"] }
 tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-uuid = { version = "1", features = ["serde"] }
+unicode-segmentation = "1"
+uuid = { version = "1", features = ["serde", "v4", "v7"] }
 zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
+
+# Ingest modules predate these lints and stay untouched.
+[lints.clippy]
+too_many_arguments = "allow"
+ptr_arg = "allow"
+single_char_add_str = "allow"
+manual_pattern_char_comparison = "allow"
