@@ -354,6 +354,13 @@ export function createMapHtml(options: MapDocumentOptions): string {
             padding = next;
             applyPadding(false);
           },
+          resize(animate) {
+            const options = { animate: Boolean(animate), pan: true };
+            map.invalidateSize(options);
+            setTimeout(function () {
+              map.invalidateSize({ animate: false, pan: true });
+            }, 50);
+          },
           zoomBy(delta, animate) {
             const current = map.getZoom();
             const next = Math.min(
