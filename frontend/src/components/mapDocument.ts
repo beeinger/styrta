@@ -75,6 +75,14 @@ export function createMapHtml(options: MapDocumentOptions): string {
       .pin-selected {
         background: #0a84ff;
       }
+      .user-location {
+        width: 18px;
+        height: 18px;
+        border-radius: 9px;
+        background: #0a84ff;
+        border: 3px solid #ffffff;
+        box-shadow: 0 0 0 8px rgba(10, 132, 255, 0.25);
+      }
     </style>
   </head>
   <body>
@@ -108,6 +116,7 @@ export function createMapHtml(options: MapDocumentOptions): string {
         let selectedId = null;
         let zoomSource = "gesture";
         let suppressMapClick = false;
+        let userMarker = null;
         const markerLayer = L.layerGroup();
 
         const map = L.map("map", {
@@ -221,6 +230,34 @@ export function createMapHtml(options: MapDocumentOptions): string {
           },
           setMarkers: setMarkers,
           setSelected: setSelected,
+          setUserLocation(latitude, longitude, animate) {
+            const latLng = [latitude, longitude];
+            if (!userMarker) {
+              const dot = document.createElement("div");
+              dot.className = "user-location";
+              userMarker = L.marker(latLng, {
+                icon: L.divIcon({
+                  className: "pin-wrap",
+                  html: dot,
+                  iconSize: [18, 18],
+                  iconAnchor: [9, 9],
+                }),
+                keyboard: false,
+                interactive: false,
+                title: "Your location",
+                alt: "Your location",
+                zIndexOffset: 1000,
+              }).addTo(map);
+            } else {
+              userMarker.setLatLng(latLng);
+            }
+
+            appliedOffset = L.point(0, 0);
+            map.setView(latLng, Math.max(map.getZoom(), 14), {
+              animate: Boolean(animate),
+            });
+            applyPadding(false);
+          },
         };
 
         markerLayer.addTo(map);

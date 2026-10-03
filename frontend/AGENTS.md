@@ -1,4 +1,4 @@
-This is an Expo/React Native mobile application. Prioritize mobile-first patterns, performance, and cross-platform compatibility.
+This is an Expo/React Native mobile application. Prioritize mobile-first patterns, performance, and cross-platform compatibility. Prioritize accessibility, every component you create must have the best possible accessibility.
 
 ## Expo has changed — do not trust your training data
 

@@ -13,5 +13,15 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       ...config.android,
       package: 'com.styrta.app',
     },
+    plugins: [
+      ...(config.plugins ?? []),
+      [
+        'expo-location',
+        {
+          locationWhenInUsePermission:
+            'Allow Styrta to use your location to center the map on you.',
+        },
+      ],
+    ],
   };
 };
