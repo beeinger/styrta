@@ -325,11 +325,9 @@ fn link_label(kind: &str, url: &str) -> String {
 
 fn is_category_index(url: &str) -> bool {
     let url = url.trim_end_matches('/');
-    CATEGORIES.iter().any(|(slug, _)| {
-        url.ends_with(&format!(
-            "/biblioteka-innowacji-spolecznych/{slug}"
-        ))
-    })
+    CATEGORIES
+        .iter()
+        .any(|(slug, _)| url.ends_with(&format!("/biblioteka-innowacji-spolecznych/{slug}")))
 }
 
 fn file_name(url: &str) -> Option<String> {

@@ -5,13 +5,13 @@
 //! by the caller, not by the model.
 
 use crate::extract::{self, Entry, Extracted, Kind};
-use crate::llm::Llm;
 use crate::scrape::{Detail, Link};
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::Path;
+use styrta::llm::{CompletionRequest, Message, Model, ToolChoice, ToolDefinition};
 
 pub const AGENT_VERSION: i32 = 2;
 const READ_CHARS: usize = 7000;
@@ -92,7 +92,7 @@ impl ArchiveSession {
 }
 
 pub async fn run(
-    llm: &Llm,
+    llm: &impl Model,
     detail: &Detail,
     page_url: &str,
     categories: &[String],
@@ -101,49 +101,41 @@ pub async fn run(
     let docs = archive.as_ref().map(|a| a.documents()).unwrap_or_default();
     let skipped = archive.as_ref().map(|a| a.skipped_binary()).unwrap_or(0);
     let mut messages = vec![
-        json!({"role": "system", "content": SYSTEM}),
-        json!({"role": "user", "content": user_prompt(detail, page_url, categories, &docs, skipped)}),
+        Message::System {
+            content: SYSTEM.to_string(),
+        },
+        Message::User {
+            content: user_prompt(detail, page_url, categories, &docs, skipped),
+        },
     ];
-    let tools = tools_schema();
+    let tools = tool_definitions();
     let mut had_text = false;
 
     for round in 0..MAX_ROUNDS {
         if round + 3 == MAX_ROUNDS {
-            messages.push(json!({
-                "role": "user",
-                "content": "You are close to the step limit. Call submit_digest now with what you have. Do not read more files unless a required field is still empty.",
-            }));
+            messages.push(Message::User {
+                content: "You are close to the step limit. Call submit_digest now with what you have. Do not read more files unless a required field is still empty.".into(),
+            });
         }
-        let reply = llm.chat(&messages, &tools).await?;
+        let reply = llm
+            .complete(&digest_request(messages.clone(), &tools, ToolChoice::Auto))
+            .await?;
         if reply.tool_calls.is_empty() {
-            messages.push(json!({
-                "role": "assistant",
-                "content": reply.content.unwrap_or_default(),
-            }));
-            messages.push(json!({
-                "role": "user",
-                "content": "Call a tool. Read a file, or call submit_digest.",
-            }));
+            messages.push(Message::Assistant {
+                content: Some(reply.content.unwrap_or_default()),
+                tool_calls: Vec::new(),
+            });
+            messages.push(Message::User {
+                content: "Call a tool. Read a file, or call submit_digest.".into(),
+            });
             continue;
         }
 
         let reads_in_turn = reply.tool_calls.iter().any(|c| c.name == "read_file");
-        let assistant_calls: Vec<Value> = reply
-            .tool_calls
-            .iter()
-            .map(|c| {
-                json!({
-                    "id": c.id,
-                    "type": "function",
-                    "function": {"name": c.name, "arguments": c.arguments},
-                })
-            })
-            .collect();
-        messages.push(json!({
-            "role": "assistant",
-            "content": reply.content,
-            "tool_calls": assistant_calls,
-        }));
+        messages.push(Message::Assistant {
+            content: reply.content.clone(),
+            tool_calls: reply.tool_calls.clone(),
+        });
 
         for call in &reply.tool_calls {
             let result = match call.name.as_str() {
@@ -186,19 +178,24 @@ pub async fn run(
                 Ok(text) => text,
                 Err(err) => format!("error: {err}"),
             };
-            messages.push(json!({
-                "role": "tool",
-                "tool_call_id": call.id,
-                "content": content,
-            }));
+            messages.push(Message::Tool {
+                tool_call_id: call.id.clone(),
+                name: call.name.clone(),
+                content,
+            });
         }
     }
-    messages.push(json!({
-        "role": "user",
-        "content": "Call submit_digest now. Do not call any other tool.",
-    }));
-    let force = json!({"type": "function", "function": {"name": "submit_digest"}});
-    if let Ok(reply) = llm.chat_forced(&messages, &tools, &force).await {
+    messages.push(Message::User {
+        content: "Call submit_digest now. Do not call any other tool.".into(),
+    });
+    if let Ok(reply) = llm
+        .complete(&digest_request(
+            messages,
+            &tools,
+            ToolChoice::Named("submit_digest".into()),
+        ))
+        .await
+    {
         if let Some(call) = reply.tool_calls.iter().find(|c| c.name == "submit_digest") {
             match parse_digest(&call.arguments, &docs, had_text) {
                 Ok(digest) => return Ok(digest),
@@ -207,6 +204,36 @@ pub async fn run(
         }
     }
     bail!("agent did not call submit_digest");
+}
+
+fn digest_request(
+    messages: Vec<Message>,
+    tools: &[ToolDefinition],
+    tool_choice: ToolChoice,
+) -> CompletionRequest {
+    CompletionRequest {
+        messages,
+        tools: tools.to_vec(),
+        tool_choice,
+        temperature: Some(0.1),
+        max_tokens: Some(8000),
+    }
+}
+
+fn tool_definitions() -> Vec<ToolDefinition> {
+    tools_schema()
+        .as_array()
+        .expect("tool schema")
+        .iter()
+        .map(|tool| {
+            let function = &tool["function"];
+            ToolDefinition {
+                name: function["name"].as_str().expect("tool name").to_string(),
+                description: function["description"].as_str().unwrap_or("").to_string(),
+                parameters: function["parameters"].clone(),
+            }
+        })
+        .collect()
 }
 
 pub fn compose(detail: &Detail, page_url: &str, categories: &[String], digest: &Digest) -> String {

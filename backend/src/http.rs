@@ -58,7 +58,8 @@ impl Client {
         for attempt in 1..=3 {
             match self.get_once(url, etag, last_modified).await {
                 Ok(fetched) => {
-                    if fetched.status.is_server_error() || fetched.status == StatusCode::TOO_MANY_REQUESTS
+                    if fetched.status.is_server_error()
+                        || fetched.status == StatusCode::TOO_MANY_REQUESTS
                     {
                         last_err = Some(anyhow::anyhow!("{url} returned {}", fetched.status));
                         tokio::time::sleep(Duration::from_millis(400 * attempt)).await;
@@ -76,12 +77,7 @@ impl Client {
     }
 
     /// Stream an archive to `dest`. A 304 leaves `dest` untouched.
-    pub async fn download(
-        &self,
-        url: &str,
-        dest: &Path,
-        etag: Option<&str>,
-    ) -> Result<Download> {
+    pub async fn download(&self, url: &str, dest: &Path, etag: Option<&str>) -> Result<Download> {
         let mut last_err = None;
         for attempt in 1..=3 {
             match self.download_once(url, dest, etag).await {
@@ -133,10 +129,7 @@ impl Client {
     }
 
     async fn download_once(&self, url: &str, dest: &Path, etag: Option<&str>) -> Result<Download> {
-        let mut req = self
-            .inner
-            .get(url)
-            .timeout(Duration::from_secs(20 * 60));
+        let mut req = self.inner.get(url).timeout(Duration::from_secs(20 * 60));
         if let Some(etag) = etag {
             req = req.header(header::IF_NONE_MATCH, etag);
         }
@@ -185,7 +178,11 @@ impl Client {
         let mut hasher = Sha256::new();
         let mut len = 0u64;
         let mut resp = resp;
-        while let Some(chunk) = resp.chunk().await.with_context(|| format!("read body {url}"))? {
+        while let Some(chunk) = resp
+            .chunk()
+            .await
+            .with_context(|| format!("read body {url}"))?
+        {
             len += chunk.len() as u64;
             if len > ARCHIVE_CAP {
                 return Ok(Download {

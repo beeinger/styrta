@@ -2,15 +2,15 @@ use crate::agent::{self, ArchiveSession};
 use crate::config::Config;
 use crate::db::{self, SavedDigest};
 use crate::http::Client;
-use crate::llm::Llm;
 use crate::scrape::{self, Card, Detail};
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use styrta::llm::Client as Chat;
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 
@@ -85,7 +85,13 @@ pub async fn catalog(_cfg: &Config, pool: &PgPool) -> Result<()> {
 pub async fn digest(cfg: &Config, pool: &PgPool, opts: DigestOpts) -> Result<()> {
     agent::ensure_pdftotext()?;
     let http = Arc::new(Client::new()?);
-    let llm = Arc::new(Llm::new(cfg)?);
+    let llm = Arc::new(Chat::from_chat(
+        &cfg.llm_base_url,
+        &cfg.llm_api_key,
+        &cfg.llm_model,
+        cfg.llm_timeout,
+        &cfg.llm_user_agent,
+    )?);
     let pool = pool.clone();
     let work = PathBuf::from(&cfg.work_dir);
     std::fs::create_dir_all(&work)?;
@@ -156,7 +162,7 @@ enum Outcome {
 
 async fn digest_one(
     http: &Client,
-    llm: &Llm,
+    llm: &Chat,
     pool: &PgPool,
     work: &PathBuf,
     row: db::InnovationRow,
@@ -190,7 +196,17 @@ async fn digest_one(
         if base_fresh && row.zip_sha256.is_none() {
             return Ok(Outcome::Skipped);
         }
-        return finish(llm, pool, row.id, &detail, &row.page_url, &categories, None, None).await;
+        return finish(
+            llm,
+            pool,
+            row.id,
+            &detail,
+            &row.page_url,
+            &categories,
+            None,
+            None,
+        )
+        .await;
     };
 
     let dir = work.join(row.slug.replace('/', "_"));
@@ -210,15 +226,34 @@ async fn digest_one(
             "{}\nArchiwum ma {} bajtów i zostaje na stronie ROPS. Notatka jest ze strony.",
             detail.intro, fetched.len
         );
-        return finish(llm, pool, row.id, &detail, &row.page_url, &categories, None, None).await;
+        return finish(
+            llm,
+            pool,
+            row.id,
+            &detail,
+            &row.page_url,
+            &categories,
+            None,
+            None,
+        )
+        .await;
     }
     if !fetched.status.is_success() {
         detail.intro = format!(
             "{}\nArchiwum nie zostało pobrane (HTTP {}).",
-            detail.intro,
-            fetched.status
+            detail.intro, fetched.status
         );
-        return finish(llm, pool, row.id, &detail, &row.page_url, &categories, None, None).await;
+        return finish(
+            llm,
+            pool,
+            row.id,
+            &detail,
+            &row.page_url,
+            &categories,
+            None,
+            None,
+        )
+        .await;
     }
     digest_zip(
         llm,
@@ -237,7 +272,7 @@ async fn digest_one(
 }
 
 async fn digest_zip(
-    llm: &Llm,
+    llm: &Chat,
     pool: &PgPool,
     row: &db::InnovationRow,
     detail: &mut Detail,
@@ -332,7 +367,7 @@ impl Drop for DirGuard {
 }
 
 async fn finish(
-    llm: &Llm,
+    llm: &Chat,
     pool: &PgPool,
     id: Uuid,
     detail: &Detail,
@@ -342,7 +377,11 @@ async fn finish(
     zip_bytes: Option<i64>,
 ) -> Result<Outcome> {
     let digest = agent::run(llm, detail, page_url, categories, None).await?;
-    tracing::info!(files = digest.files_read.len(), caveats = digest.caveats, "agent finished");
+    tracing::info!(
+        files = digest.files_read.len(),
+        caveats = digest.caveats,
+        "agent finished"
+    );
     let text = agent::compose(detail, page_url, categories, &digest);
     let mut raw = digest.raw.clone();
     if let Some(obj) = raw.as_object_mut() {

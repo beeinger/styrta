@@ -4,7 +4,6 @@ mod db;
 mod extract;
 mod http;
 mod ingest;
-mod llm;
 mod scrape;
 
 use anyhow::Result;
