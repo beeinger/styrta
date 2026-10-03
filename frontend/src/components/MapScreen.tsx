@@ -346,6 +346,9 @@ export function MapScreen() {
         return;
       }
       setSelectedMarker(marker);
+      run(
+        `window.__styrtaMap.centerOn(${marker.latitude}, ${marker.longitude}, ${reduceMotion ? "false" : "true"})`,
+      );
       AccessibilityInfo.announceForAccessibility(
         `${marker.title}, ${marker.startsAtLabel}, hosted by ${marker.hostName}, ${marker.signedCount} of ${marker.capacity} people`,
       );
