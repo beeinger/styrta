@@ -71,6 +71,7 @@ type MapMessage =
 export function MapScreen() {
   const insets = useSafeAreaInsets();
   const webViewRef = useRef<WebView>(null);
+  const chatToggleRef = useRef<View>(null);
   const blurTargetRef = useRef<View>(null);
   const announcedReady = useRef(false);
   const announcedLocation = useRef(false);
@@ -375,7 +376,11 @@ export function MapScreen() {
       style={styles.screen}
       onStartShouldSetResponderCapture={(event) => {
         const focused = TextInput.State.currentlyFocusedInput();
-        if (focused == null || event.target === focused) {
+        if (
+          focused == null ||
+          event.target === focused ||
+          event.target === chatToggleRef.current
+        ) {
           return false;
         }
         Keyboard.dismiss();
@@ -483,6 +488,7 @@ export function MapScreen() {
         onHeightChange={setSheetHeight}
         onTopChange={setChatTop}
         onExpandedWithKeyboardChange={setChatCoversEvents}
+        toggleRef={chatToggleRef}
       />
       <AttendingBubbles
         events={attendingEvents}

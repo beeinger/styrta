@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import {
   AccessibilityInfo,
   Keyboard,
@@ -17,6 +17,7 @@ type AiChatSheetProps = {
   onHeightChange: (height: number) => void;
   onTopChange: (offsetFromBottom: number) => void;
   onExpandedWithKeyboardChange: (active: boolean) => void;
+  toggleRef: RefObject<View | null>;
 };
 
 type ChatMessage = {
@@ -31,6 +32,7 @@ export function AiChatSheet({
   onHeightChange,
   onTopChange,
   onExpandedWithKeyboardChange,
+  toggleRef,
 }: AiChatSheetProps) {
   const insets = useSafeAreaInsets();
   const { height: windowHeight } = useWindowDimensions();
@@ -168,6 +170,7 @@ export function AiChatSheet({
           }}
         >
           <Pressable
+            ref={toggleRef}
             accessibilityRole="button"
             accessibilityLabel={expanded ? "Minimize chat" : "Expand chat"}
             accessibilityHint={
@@ -273,6 +276,7 @@ export function AiChatSheet({
 function ChevronGlyph({ expanded }: { expanded: boolean }) {
   return (
     <View
+      pointerEvents="none"
       importantForAccessibility="no"
       accessibilityElementsHidden
       style={[styles.chevron, expanded ? styles.chevronDown : styles.chevronUp]}
