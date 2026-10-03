@@ -2,9 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AccessibilityInfo,
   ActivityIndicator,
-  AppState,
   I18nManager,
-  Linking,
   Platform,
   Pressable,
   StyleSheet,
@@ -83,12 +81,9 @@ export function MapScreen() {
   const [reduceMotion, setReduceMotion] = useState(false);
   const [selectedMarker, setSelectedMarker] = useState<MapMarker | null>(null);
   const [eventsOpen, setEventsOpen] = useState(false);
-  const [locationPrompt, setLocationPrompt] = useState<
-    "hidden" | "ask" | "settings"
-  >("hidden");
   const locating = useRef(false);
-  const locationPromptRef = useRef(locationPrompt);
-  locationPromptRef.current = locationPrompt;
+  const mapReadyRef = useRef(false);
+  mapReadyRef.current = mapReady;
   const obstruction = sheetHeight || 168;
 
   const html = useMemo(() => {
@@ -104,55 +99,74 @@ export function MapScreen() {
     });
   }, [startCamera]);
 
-  const centerOnUser = useCallback(async () => {
-    if (locating.current) {
-      return;
-    }
-    locating.current = true;
-    try {
-      const existing = await Location.getForegroundPermissionsAsync();
-      const permission =
-        existing.status === "granted"
-          ? existing
-          : await Location.requestForegroundPermissionsAsync();
-      if (permission.status !== "granted") {
-        setLocationPrompt(permission.canAskAgain ? "ask" : "settings");
-        setStartCamera((current) => current ?? FALLBACK_CAMERA);
-        AccessibilityInfo.announceForAccessibility(
-          "Location access was denied. Showing a default area.",
-        );
+  const centerOnUser = useCallback(
+    async (recenter: boolean, announce: boolean) => {
+      if (locating.current) {
         return;
       }
-
-      setLocationPrompt("hidden");
-
-      if (Platform.OS === "android") {
-        try {
-          await Location.enableNetworkProviderAsync();
-        } catch {
-          // The position request below fails if location services stay off.
+      locating.current = true;
+      try {
+        const existing = await Location.getForegroundPermissionsAsync();
+        const permission =
+          existing.status === "granted"
+            ? existing
+            : await Location.requestForegroundPermissionsAsync();
+        if (permission.status !== "granted") {
+          if (recenter) {
+            AccessibilityInfo.announceForAccessibility(
+              "Location access was denied.",
+            );
+          }
+          return;
         }
-      }
 
-      const lastKnown = await Location.getLastKnownPositionAsync();
-      if (lastKnown) {
-        publishLocation(lastKnown.coords);
-      }
+        if (Platform.OS === "android") {
+          try {
+            await Location.enableNetworkProviderAsync();
+          } catch {
+            // The position request below fails if location services stay off.
+          }
+        }
 
-      const current = await withTimeout(
-        Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
-        }),
-        10000,
-      );
-      publishLocation(current.coords);
-    } catch {
-      setLocationPrompt((current) => (current === "hidden" ? "ask" : current));
-      setStartCamera((current) => current ?? FALLBACK_CAMERA);
-    } finally {
-      locating.current = false;
-    }
-  }, []);
+        let latest: Coordinates | null = null;
+        const lastKnown = await Location.getLastKnownPositionAsync();
+        if (lastKnown) {
+          latest = {
+            latitude: lastKnown.coords.latitude,
+            longitude: lastKnown.coords.longitude,
+          };
+          publishLocation(lastKnown.coords);
+        }
+
+        try {
+          const current = await withTimeout(
+            Location.getCurrentPositionAsync({
+              accuracy: Location.Accuracy.Balanced,
+            }),
+            10000,
+          );
+          latest = {
+            latitude: current.coords.latitude,
+            longitude: current.coords.longitude,
+          };
+          publishLocation(current.coords);
+        } catch {
+          if (!latest && recenter) {
+            AccessibilityInfo.announceForAccessibility(
+              "Could not find your location.",
+            );
+          }
+        }
+
+        if (recenter && latest) {
+          moveMapTo(latest, announce);
+        }
+      } finally {
+        locating.current = false;
+      }
+    },
+    [],
+  );
 
   function publishLocation(coords: Location.LocationObjectCoords) {
     const next = {
@@ -161,17 +175,29 @@ export function MapScreen() {
     };
     setUserLocation(next);
     setStartCamera((current) => current ?? { ...next, zoom: USER_ZOOM });
-    setZoom((currentZoom) => Math.max(currentZoom, USER_ZOOM));
     if (!announcedLocation.current) {
       announcedLocation.current = true;
       AccessibilityInfo.announceForAccessibility("Showing your location");
     }
   }
 
+  function moveMapTo(coords: Coordinates, announce: boolean) {
+    if (!mapReadyRef.current) {
+      return;
+    }
+    run(
+      `window.__styrtaMap.centerOn(${coords.latitude}, ${coords.longitude}, ${reduceMotionRef.current ? "false" : "true"})`,
+    );
+    setZoom((currentZoom) => Math.max(currentZoom, USER_ZOOM));
+    if (announce) {
+      AccessibilityInfo.announceForAccessibility("Centered on your location");
+    }
+  }
+
   useEffect(() => {
     let mounted = true;
 
-    void centerOnUser();
+    void centerOnUser(false, false);
 
     AccessibilityInfo.isReduceMotionEnabled().then((enabled) => {
       if (mounted) {
@@ -194,38 +220,19 @@ export function MapScreen() {
     };
   }, [centerOnUser]);
 
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      if (announcedLocation.current) {
-        return;
-      }
-      setStartCamera((current) => current ?? FALLBACK_CAMERA);
-      setLocationPrompt((current) => (current === "hidden" ? "ask" : current));
-    }, 8000);
-    return () => clearTimeout(timer);
-  }, []);
-
-  useEffect(() => {
-    const subscription = AppState.addEventListener("change", (state) => {
-      if (state === "active" && locationPromptRef.current !== "hidden") {
-        void centerOnUser();
-      }
-    });
-    return () => subscription.remove();
-  }, [centerOnUser]);
-
   const endInset = I18nManager.isRTL ? insets.left : insets.right;
   const startInset = I18nManager.isRTL ? insets.right : insets.left;
-  const controlClearance = Math.max(16, endInset) + 64;
+  const endClearance = Math.max(16, endInset) + 64;
+  const startClearance = Math.max(16, startInset) + 64;
 
   const mapPadding = useMemo<MapPadding>(
     () => ({
       top: insets.top,
       bottom: obstruction,
-      left: I18nManager.isRTL ? controlClearance : Math.max(16, startInset),
-      right: I18nManager.isRTL ? Math.max(16, startInset) : controlClearance,
+      left: I18nManager.isRTL ? endClearance : startClearance,
+      right: I18nManager.isRTL ? startClearance : endClearance,
     }),
-    [controlClearance, insets.top, obstruction, startInset],
+    [endClearance, insets.top, obstruction, startClearance],
   );
 
   useEffect(() => {
@@ -397,43 +404,21 @@ export function MapScreen() {
           </Text>
         </View>
       ) : null}
-      {locationPrompt === "hidden" ? null : (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={
-            locationPrompt === "settings"
-              ? "Enable location in Settings"
-              : "Use my location"
-          }
-          onPress={() => {
-            if (locationPrompt === "settings") {
-              void Linking.openSettings();
-              return;
-            }
-            void centerOnUser();
-          }}
-          style={[
-            styles.locationButton,
-            {
-              top: insets.top + 12,
-              start: Math.max(16, startInset),
-              end: controlClearance + 12,
-            },
-          ]}
-        >
-          <Text style={styles.locationButtonText}>
-            {locationPrompt === "settings"
-              ? "Enable location in Settings"
-              : "Use my location"}
-          </Text>
-        </Pressable>
-      )}
       <MapZoomControls
         bottom={obstruction + 12}
         canZoomIn={mapReady && zoom < MAX_ZOOM - 0.01}
         canZoomOut={mapReady && zoom > MIN_ZOOM + 0.01}
+        canCenter={mapReady}
         onZoomIn={() => zoomBy("in")}
         onZoomOut={() => zoomBy("out")}
+        onCenter={() => {
+          if (userLocation) {
+            moveMapTo(userLocation, true);
+            void centerOnUser(true, false);
+            return;
+          }
+          void centerOnUser(true, true);
+        }}
       />
       </BlurTargetView>
       {eventsOpen ? (
@@ -462,7 +447,7 @@ export function MapScreen() {
         events={attendingEvents}
         expanded={eventsOpen}
         onExpandedChange={setEventsOpen}
-        top={insets.top + (locationPrompt === "hidden" ? 12 : 72)}
+        top={insets.top + 12}
         start={Math.max(16, startInset) / 2}
         end={8}
         onFocusEvent={focusEvent}
@@ -528,20 +513,6 @@ const styles = StyleSheet.create({
     color: "#1C1C1E",
     fontSize: 18,
     lineHeight: 26,
-    textAlign: "center",
-  },
-  locationButton: {
-    position: "absolute",
-    backgroundColor: "#1C1C1E",
-    borderRadius: 16,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-  },
-  locationButtonText: {
-    color: "#FFFFFF",
-    fontSize: 16,
-    fontWeight: "600",
-    lineHeight: 22,
     textAlign: "center",
   },
 });
