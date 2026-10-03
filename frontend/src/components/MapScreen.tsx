@@ -76,12 +76,14 @@ export function MapScreen() {
   const [userLocation, setUserLocation] = useState<Coordinates | null>(null);
   const [zoom, setZoom] = useState(FALLBACK_CAMERA.zoom);
   const [sheetHeight, setSheetHeight] = useState(0);
+  const [chatTop, setChatTop] = useState(0);
   const [mapReady, setMapReady] = useState(false);
   const [mapFailed, setMapFailed] = useState(false);
   const [reduceMotion, setReduceMotion] = useState(false);
   const [selectedMarker, setSelectedMarker] = useState<MapMarker | null>(null);
   const [eventsOpen, setEventsOpen] = useState(false);
   const locating = useRef(false);
+  const mapFrameHeight = useRef(0);
   const mapReadyRef = useRef(false);
   mapReadyRef.current = mapReady;
   const obstruction = sheetHeight || 168;
@@ -228,11 +230,11 @@ export function MapScreen() {
   const mapPadding = useMemo<MapPadding>(
     () => ({
       top: insets.top,
-      bottom: obstruction,
+      bottom: 0,
       left: I18nManager.isRTL ? endClearance : startClearance,
       right: I18nManager.isRTL ? startClearance : endClearance,
     }),
-    [endClearance, insets.top, obstruction, startClearance],
+    [endClearance, insets.top, startClearance],
   );
 
   useEffect(() => {
@@ -367,7 +369,20 @@ export function MapScreen() {
         <WebView
           ref={webViewRef}
           source={{ html, baseUrl: "https://localhost" }}
-          style={styles.map}
+          style={[styles.map, { bottom: chatTop || obstruction }]}
+          onLayout={(event) => {
+            const next = Math.round(event.nativeEvent.layout.height);
+            if (next === mapFrameHeight.current) {
+              return;
+            }
+            mapFrameHeight.current = next;
+            if (!mapReadyRef.current) {
+              return;
+            }
+            run(
+              `window.__styrtaMap.resize(${reduceMotionRef.current ? "false" : "true"})`,
+            );
+          }}
           originWhitelist={["*"]}
           javaScriptEnabled
           domStorageEnabled
@@ -405,7 +420,7 @@ export function MapScreen() {
         </View>
       ) : null}
       <MapZoomControls
-        bottom={obstruction + 12}
+        bottom={(chatTop || obstruction) + 12}
         canZoomIn={mapReady && zoom < MAX_ZOOM - 0.01}
         canZoomOut={mapReady && zoom > MIN_ZOOM + 0.01}
         canCenter={mapReady}
@@ -442,7 +457,7 @@ export function MapScreen() {
           />
         </>
       ) : null}
-      <AiChatSheet onHeightChange={setSheetHeight} />
+      <AiChatSheet onHeightChange={setSheetHeight} onTopChange={setChatTop} />
       <AttendingBubbles
         events={attendingEvents}
         expanded={eventsOpen}

@@ -211,10 +211,10 @@ const styles = StyleSheet.create({
   },
   stack: {
     alignSelf: "flex-start",
-    marginTop: "20%",
+    marginTop: "10%",
   },
   expanded: {
-    marginTop: "20%",
+    marginTop: "10%",
     gap: 8,
   },
   bubble: {
