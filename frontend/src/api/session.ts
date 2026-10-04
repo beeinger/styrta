@@ -1,5 +1,4 @@
-import * as SecureStore from "expo-secure-store";
-
+import { deleteItem, getItem, setItem } from "./kv";
 import type { Session } from "./types";
 
 const ACCESS_TOKEN_KEY = "styrta.access_token";
@@ -16,9 +15,9 @@ type SessionMeta = {
 
 export async function loadStoredSession(): Promise<Session | null> {
   const [accessToken, refreshToken, metaJson] = await Promise.all([
-    SecureStore.getItemAsync(ACCESS_TOKEN_KEY),
-    SecureStore.getItemAsync(REFRESH_TOKEN_KEY),
-    SecureStore.getItemAsync(SESSION_META_KEY),
+    getItem(ACCESS_TOKEN_KEY),
+    getItem(REFRESH_TOKEN_KEY),
+    getItem(SESSION_META_KEY),
   ]);
   if (!accessToken || !refreshToken || !metaJson) {
     return null;
@@ -47,17 +46,17 @@ export async function saveStoredSession(session: Session): Promise<void> {
     refresh_expires_at: session.refresh_expires_at,
   };
   await Promise.all([
-    SecureStore.setItemAsync(ACCESS_TOKEN_KEY, session.access_token),
-    SecureStore.setItemAsync(REFRESH_TOKEN_KEY, session.refresh_token),
-    SecureStore.setItemAsync(SESSION_META_KEY, JSON.stringify(meta)),
+    setItem(ACCESS_TOKEN_KEY, session.access_token),
+    setItem(REFRESH_TOKEN_KEY, session.refresh_token),
+    setItem(SESSION_META_KEY, JSON.stringify(meta)),
   ]);
 }
 
 export async function clearStoredSession(): Promise<void> {
   await Promise.all([
-    SecureStore.deleteItemAsync(ACCESS_TOKEN_KEY),
-    SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY),
-    SecureStore.deleteItemAsync(SESSION_META_KEY),
+    deleteItem(ACCESS_TOKEN_KEY),
+    deleteItem(REFRESH_TOKEN_KEY),
+    deleteItem(SESSION_META_KEY),
   ]);
 }
 

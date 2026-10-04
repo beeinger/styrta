@@ -66,6 +66,7 @@ Chunks are embedded with `intfloat/multilingual-e5-large` (1024 dimensions) and 
 | `k8s/embeddings/` | CPU embeddings, `multilingual-e5-large` |
 | `k8s/postgres/` | Postgres with pgvector |
 | `k8s/api/` | The `serve` deployment, ingest and embed jobs |
+| `k8s/web/` | The web app at styrta.energia.dev. It proxies `/v1` to `serve` |
 
 `knowledge/` is a separate notes repo and is gitignored here. It is not required to build or run the app.
 

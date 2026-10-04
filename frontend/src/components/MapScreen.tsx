@@ -14,7 +14,7 @@ import {
 import { BlurTargetView, BlurView } from "expo-blur";
 import * as Location from "expo-location";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { WebView, type WebViewMessageEvent } from "react-native-webview";
+import { WebView, type WebViewHandle, type WebViewMessageEvent } from "./MapWebView";
 
 import { getMyEvents, getNearbyEvents, signIn as requestSignIn, signUp as requestSignUp } from "../api/client";
 import { ApiError, type MyEvent, type NearbyEvent, type Session } from "../api/types";
@@ -75,7 +75,7 @@ type MapMessage =
 
 export function MapScreen() {
   const insets = useSafeAreaInsets();
-  const webViewRef = useRef<WebView>(null);
+  const webViewRef = useRef<WebViewHandle>(null);
   const chatToggleRef = useRef<View>(null);
   const blurTargetRef = useRef<View>(null);
   const announcedReady = useRef(false);
