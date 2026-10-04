@@ -226,12 +226,8 @@ pub(crate) fn retryable_transport(err: &reqwest::Error) -> bool {
 }
 
 fn http_error(status: reqwest::StatusCode, body: &str, endpoint: &Endpoint) -> String {
-    let body = endpoint.scrub(&truncate(body, 400));
+    let body = endpoint.scrub(&crate::endpoint::truncate(body, 400));
     format!("chat completion failed: {status}: {body}")
-}
-
-fn truncate(text: &str, max: usize) -> String {
-    text.chars().take(max).collect()
 }
 
 fn wire_body(model: &str, request: &CompletionRequest, stream: bool) -> Value {
@@ -798,10 +794,10 @@ mod tests {
 
     fn client(base: &str, key: &str) -> Client {
         let map: std::collections::HashMap<String, String> = [
-            ("OPENAI_BASE_URL", base),
-            ("OPENAI_API_KEY", key),
-            ("OPENAI_MODEL", "chat-model"),
-            ("OPENAI_TIMEOUT_SECS", "5"),
+            ("LLM_BASE_URL", base),
+            ("LLM_API_KEY", key),
+            ("LLM_MODEL", "chat-model"),
+            ("LLM_TIMEOUT_SECS", "5"),
             ("SPEECH_BASE_URL", "http://127.0.0.1:9/speech"),
             ("STT_MODEL", "stt"),
             ("TTS_MODEL", "tts"),
@@ -933,11 +929,11 @@ mod tests {
         })
         .await;
         let mut map: std::collections::HashMap<String, String> = [
-            ("OPENAI_BASE_URL", base.as_str()),
-            ("OPENAI_API_KEY", key.as_str()),
-            ("OPENAI_MODEL", "chat-model"),
-            ("OPENAI_TIMEOUT_SECS", "5"),
-            ("OPENAI_USER_AGENT", agent.as_str()),
+            ("LLM_BASE_URL", base.as_str()),
+            ("LLM_API_KEY", key.as_str()),
+            ("LLM_MODEL", "chat-model"),
+            ("LLM_TIMEOUT_SECS", "5"),
+            ("LLM_USER_AGENT", agent.as_str()),
             ("SPEECH_BASE_URL", "http://127.0.0.1:9/speech"),
             ("STT_MODEL", "stt"),
             ("TTS_MODEL", "tts"),

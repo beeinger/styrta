@@ -2,19 +2,6 @@ use crate::appdb::{ChatMessage, ChatRole, Durability, Memory, Profile};
 use crate::harness::RECENT_USER_TURNS;
 use crate::llm::Message;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Error {
-    NotImplemented,
-}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("not implemented")
-    }
-}
-
-impl std::error::Error for Error {}
-
 pub(crate) fn english_locale(locale: &str) -> bool {
     locale.trim().eq_ignore_ascii_case("en")
 }
@@ -26,7 +13,7 @@ pub fn messages(
     summary: Option<&str>,
     recent: &[ChatMessage],
     user_text: &str,
-) -> Result<Vec<Message>, Error> {
+) -> Vec<Message> {
     let mut out = vec![
         Message::System {
             content: system_prompt(locale).to_string(),
@@ -54,18 +41,26 @@ pub fn messages(
     out.push(Message::User {
         content: user_text.to_string(),
     });
-    Ok(out)
+    out
 }
 
 fn system_prompt(locale: &str) -> &'static str {
     if english_locale(locale) {
         "You are Styrta, a helper for nearby meetups. Reply in English, briefly.\n\
 Call create_event, join_event, cancel_attendance, and complete_attendance only after the user asked.\n\
-If search_knowledge returns nothing, say the library has nothing. Do not invent URLs or events."
+If search_knowledge returns nothing, say the library has nothing. Do not invent URLs or events.\n\
+For a service or an innovation, call search_knowledge and cite only URLs that tool returned.\n\
+When she wants somewhere to go or someone to go with, call search_events or search_people.\n\
+Hard constraints are already applied, so do not offer a dropped activity.\n\
+Propose one fit and the constraint that decided it, unless she asked for a list."
     } else {
         "Jesteś Styrtą i pomagasz umawiać się na spotkania w pobliżu. Odpowiadaj po polsku, krótko.\n\
 create_event, join_event, cancel_attendance i complete_attendance wolno wywołać tylko wtedy, gdy użytkownik o to poprosił.\n\
-Gdy search_knowledge nic nie zwróci, powiedz, że w bibliotece nic nie ma. Nie wymyślaj adresów URL ani wydarzeń."
+Gdy search_knowledge nic nie zwróci, powiedz, że w bibliotece nic nie ma. Nie wymyślaj adresów URL ani wydarzeń.\n\
+Przy usłudze albo innowacji wywołaj search_knowledge i cytuj tylko adresy z tego narzędzia.\n\
+Gdy szuka miejsca albo towarzystwa, wywołaj search_events albo search_people.\n\
+Twarde ograniczenia są już zastosowane, więc nie proponuj odrzuconej aktywności.\n\
+Zaproponuj jedno dopasowanie i ograniczenie, które o nim zdecydowało, chyba że prosi o listę."
     }
 }
 
@@ -188,24 +183,29 @@ mod tests {
     #[test]
     fn polish_when_locale_is_blank_or_pl() {
         for locale in ["", "pl", "PL", "  "] {
-            let messages = messages(locale, &profile(), &[], None, &[], "cześć").unwrap();
+            let messages = messages(locale, &profile(), &[], None, &[], "cześć");
             let prompt = system(&messages, 0);
             assert!(
                 prompt.contains("w bibliotece nic nie ma"),
                 "{locale}: {prompt}"
             );
+            assert!(prompt.contains("search_events"), "{prompt}");
+            assert!(prompt.contains("search_people"), "{prompt}");
+            assert!(prompt.contains("search_knowledge"), "{prompt}");
             assert!(prompt.contains("create_event"), "{prompt}");
-            assert!(prompt.len() < 800, "{}", prompt.len());
+            assert!(prompt.len() < 900, "{}", prompt.len());
             assert!(!prompt.contains("library has nothing"), "{prompt}");
         }
     }
 
     #[test]
     fn english_when_locale_is_en() {
-        let messages = messages("en", &profile(), &[], None, &[], "hi").unwrap();
+        let messages = messages("en", &profile(), &[], None, &[], "hi");
         let prompt = system(&messages, 0);
         assert!(prompt.contains("library has nothing"), "{prompt}");
         assert!(prompt.contains("only after the user asked"), "{prompt}");
+        assert!(prompt.contains("search_events"), "{prompt}");
+        assert!(prompt.contains("one fit"), "{prompt}");
         assert!(!prompt.contains("bibliotece"), "{prompt}");
     }
 
@@ -237,8 +237,7 @@ mod tests {
             Some("sum-text"),
             &recent,
             "new-text",
-        )
-        .unwrap();
+        );
 
         assert!(system(&messages, 0).contains("bibliotece"));
         let context = system(&messages, 1);

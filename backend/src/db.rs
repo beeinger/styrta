@@ -1,9 +1,9 @@
-use crate::config::Config;
 use crate::extract::Extracted;
 use crate::scrape::{self, Card, Link, Section};
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use sqlx::PgPool;
+use styrta::config::Config;
 use uuid::Uuid;
 
 #[derive(Debug, sqlx::FromRow)]
@@ -117,18 +117,18 @@ pub async fn upsert_card(
     Ok(id)
 }
 
-pub async fn save_page(
-    pool: &PgPool,
-    id: Uuid,
-    title: &str,
-    licence: Option<&str>,
-    zip_url: Option<&str>,
-    sections: &[Section],
-    intro: &str,
-    links: &[Link],
-    page_sha256: &str,
-) -> Result<()> {
-    let body = sections_json(intro, sections);
+pub struct SavedPage<'a> {
+    pub title: &'a str,
+    pub licence: Option<&'a str>,
+    pub zip_url: Option<&'a str>,
+    pub sections: &'a [Section],
+    pub intro: &'a str,
+    pub links: &'a [Link],
+    pub page_sha256: &'a str,
+}
+
+pub async fn save_page(pool: &PgPool, id: Uuid, page: SavedPage<'_>) -> Result<()> {
+    let body = sections_json(page.intro, page.sections);
     sqlx::query(
         r#"
         UPDATE innovations SET
@@ -143,15 +143,15 @@ pub async fn save_page(
         "#,
     )
     .bind(id)
-    .bind(title)
-    .bind(scrape::title_key(title))
-    .bind(licence)
-    .bind(zip_url)
+    .bind(page.title)
+    .bind(scrape::title_key(page.title))
+    .bind(page.licence)
+    .bind(page.zip_url)
     .bind(body)
-    .bind(page_sha256)
+    .bind(page.page_sha256)
     .execute(pool)
     .await?;
-    replace_links(pool, id, links).await?;
+    replace_links(pool, id, page.links).await?;
     Ok(())
 }
 

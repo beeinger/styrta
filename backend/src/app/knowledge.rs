@@ -20,7 +20,6 @@ const EMBED_BATCH: i64 = 4;
 
 #[derive(Debug)]
 pub enum Error {
-    NotImplemented,
     Database(sqlx::Error),
     Embed(crate::embed::Error),
     EmbedCount { expected: usize, got: usize },
@@ -29,7 +28,6 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::NotImplemented => f.write_str("not implemented"),
             Error::Database(err) => write!(f, "database: {err}"),
             Error::Embed(err) => write!(f, "embed: {err}"),
             Error::EmbedCount { expected, got } => {
@@ -44,7 +42,7 @@ impl std::error::Error for Error {
         match self {
             Error::Database(err) => Some(err),
             Error::Embed(err) => Some(err),
-            Error::NotImplemented | Error::EmbedCount { .. } => None,
+            Error::EmbedCount { .. } => None,
         }
     }
 }
@@ -86,9 +84,11 @@ pub async fn search(
         return Ok(Vec::new());
     }
     if embeddings_present(pool, query.category.as_deref()).await? {
-        vector_search(pool, embedder, query).await
+        let mut ranked = vector_search(pool, embedder, query).await?;
+        ranked.extend(trigram_search(pool, query, true).await?);
+        Ok(merge_scored(ranked))
     } else {
-        trigram_search(pool, query).await
+        Ok(merge_scored(trigram_search(pool, query, false).await?))
     }
 }
 
@@ -154,13 +154,14 @@ async fn embed_batch(pool: &PgPool, embedder: &dyn Embedder, model: &str) -> Res
         FROM innovation_chunks c
         JOIN innovations i ON i.id = c.innovation_id
         WHERE i.digest_text IS NOT NULL
-          AND c.embedding IS NULL
+          AND (c.embedding IS NULL OR c.embedding_model IS DISTINCT FROM $2)
         ORDER BY c.id
         LIMIT $1
         FOR UPDATE OF c SKIP LOCKED
         "#,
     )
     .bind(EMBED_BATCH)
+    .bind(model)
     .fetch_all(&mut *tx)
     .await?;
 
@@ -185,7 +186,7 @@ async fn embed_batch(pool: &PgPool, embedder: &dyn Embedder, model: &str) -> Res
             UPDATE innovation_chunks
             SET embedding = $1, embedding_model = $3
             WHERE id = $2
-              AND embedding IS NULL
+              AND (embedding IS NULL OR embedding_model IS DISTINCT FROM $3)
             "#,
         )
         .bind(Vector::from(vector))
@@ -268,7 +269,7 @@ async fn vector_search(
     pool: &PgPool,
     embedder: &dyn Embedder,
     query: &Query,
-) -> Result<Vec<Hit>, Error> {
+) -> Result<Vec<(f64, Hit)>, Error> {
     let embedded = embedder
         .embed(Input::Query, std::slice::from_ref(&query.text))
         .await?;
@@ -336,7 +337,20 @@ async fn vector_search(
     Ok(rank_vector_rows(rows))
 }
 
-fn rank_vector_rows(rows: Vec<VectorRow>) -> Vec<Hit> {
+fn merge_scored(mut rows: Vec<(f64, Hit)>) -> Vec<Hit> {
+    rows.sort_by(|left, right| {
+        right
+            .0
+            .total_cmp(&left.0)
+            .then_with(|| left.1.title.cmp(&right.1.title))
+            .then_with(|| left.1.page_url.cmp(&right.1.page_url))
+    });
+    let mut seen = std::collections::HashSet::new();
+    rows.retain(|(_, hit)| seen.insert(hit.page_url.clone()));
+    rows.into_iter().map(|(_, hit)| hit).collect()
+}
+
+fn rank_vector_rows(rows: Vec<VectorRow>) -> Vec<(f64, Hit)> {
     let mut ranked = Vec::new();
     for row in rows {
         let cosine = row.cosine.unwrap_or(f64::NEG_INFINITY);
@@ -371,17 +385,14 @@ fn rank_vector_rows(rows: Vec<VectorRow>) -> Vec<Hit> {
             },
         ));
     }
-    ranked.sort_by(|left, right| {
-        right
-            .0
-            .total_cmp(&left.0)
-            .then_with(|| left.1.title.cmp(&right.1.title))
-            .then_with(|| left.1.page_url.cmp(&right.1.page_url))
-    });
-    ranked.into_iter().map(|(_, hit)| hit).collect()
+    ranked
 }
 
-async fn trigram_search(pool: &PgPool, query: &Query) -> Result<Vec<Hit>, Error> {
+async fn trigram_search(
+    pool: &PgPool,
+    query: &Query,
+    only_without_vectors: bool,
+) -> Result<Vec<(f64, Hit)>, Error> {
     let rows: Vec<TrigramRow> = sqlx::query_as(
         r#"
         SELECT
@@ -420,6 +431,15 @@ async fn trigram_search(pool: &PgPool, query: &Query) -> Result<Vec<Hit>, Error>
                   AND cat.slug = $2
             )
           )
+          AND (
+            NOT $4::bool
+            OR NOT EXISTS (
+                SELECT 1
+                FROM innovation_chunks c
+                WHERE c.innovation_id = i.id
+                  AND c.embedding IS NOT NULL
+            )
+          )
           AND GREATEST(
                 similarity(lower(i.title), lower($1)),
                 similarity(lower(i.digest_text), lower($1))
@@ -430,18 +450,24 @@ async fn trigram_search(pool: &PgPool, query: &Query) -> Result<Vec<Hit>, Error>
     .bind(&query.text)
     .bind(query.category.as_deref())
     .bind(MIN_TRIGRAM)
+    .bind(only_without_vectors)
     .fetch_all(pool)
     .await?;
     Ok(rows
         .into_iter()
         .filter(|row| row.score >= MIN_TRIGRAM)
-        .map(|row| Hit {
-            title: row.title,
-            page_url: row.page_url,
-            licence: row.licence,
-            categories: row.categories,
-            snippet: row.snippet,
-            film_url: row.film_url,
+        .map(|row| {
+            (
+                row.score,
+                Hit {
+                    title: row.title,
+                    page_url: row.page_url,
+                    licence: row.licence,
+                    categories: row.categories,
+                    snippet: row.snippet,
+                    film_url: row.film_url,
+                },
+            )
         })
         .collect())
 }
@@ -1350,5 +1376,42 @@ mod tests {
                 .expect("existing count");
         assert_eq!(fresh_count, 2);
         assert_eq!(existing_count, 3);
+    }
+
+    #[tokio::test]
+    async fn mismatched_embedding_model_is_rewritten() {
+        let fix = fixture().await;
+        let pool = &fix.pool;
+        let id = insert_innovation(
+            pool,
+            "Stary model",
+            "https://fixture.example/stary",
+            None,
+            Some("Opis do przepisania"),
+            json!([]),
+        )
+        .await;
+        insert_chunk(pool, id, 0, "card", "Stary wektor", Some(axis(1))).await;
+        sqlx::query(
+            "UPDATE innovation_chunks SET embedding_model = 'old' WHERE innovation_id = $1",
+        )
+        .bind(id)
+        .execute(pool)
+        .await
+        .expect("mark old model");
+        let (embedder, calls) = fake(axis(0), axis(0));
+        let wrote = embed_missing(pool, &embedder, "new").await.expect("embed");
+        assert!(wrote >= 1, "{wrote}");
+        let model: String = sqlx::query_scalar(
+            "SELECT embedding_model FROM innovation_chunks WHERE innovation_id = $1 AND field = 'card'",
+        )
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .expect("model");
+        assert_eq!(model, "new");
+        assert!(!calls.lock().expect("calls").is_empty());
+        let again = embed_missing(pool, &embedder, "new").await.expect("embed");
+        assert_eq!(again, 0);
     }
 }

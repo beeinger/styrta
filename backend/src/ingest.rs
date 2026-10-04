@@ -1,6 +1,5 @@
 use crate::agent::{self, ArchiveSession};
-use crate::config::Config;
-use crate::db::{self, SavedDigest};
+use crate::db::{self, SavedDigest, SavedPage};
 use crate::http::Client;
 use crate::scrape::{self, Card, Detail};
 use anyhow::{bail, Context, Result};
@@ -8,8 +7,9 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use styrta::config::Config;
 use styrta::llm::Client as Chat;
 use tokio::sync::Semaphore;
 use uuid::Uuid;
@@ -164,7 +164,7 @@ async fn digest_one(
     http: &Client,
     llm: &Chat,
     pool: &PgPool,
-    work: &PathBuf,
+    work: &Path,
     row: db::InnovationRow,
     force: bool,
 ) -> Result<Outcome> {
@@ -177,13 +177,15 @@ async fn digest_one(
     db::save_page(
         pool,
         row.id,
-        &detail.title,
-        detail.licence.as_deref(),
-        detail.zip_url.as_deref(),
-        &detail.sections,
-        &detail.intro,
-        &detail.links,
-        &page_sha,
+        SavedPage {
+            title: &detail.title,
+            licence: detail.licence.as_deref(),
+            zip_url: detail.zip_url.as_deref(),
+            sections: &detail.sections,
+            intro: &detail.intro,
+            links: &detail.links,
+            page_sha256: &page_sha,
+        },
     )
     .await?;
 
@@ -203,8 +205,7 @@ async fn digest_one(
             &detail,
             &row.page_url,
             &categories,
-            None,
-            None,
+            ZipNote::none(),
         )
         .await;
     };
@@ -233,8 +234,7 @@ async fn digest_one(
             &detail,
             &row.page_url,
             &categories,
-            None,
-            None,
+            ZipNote::none(),
         )
         .await;
     }
@@ -250,8 +250,7 @@ async fn digest_one(
             &detail,
             &row.page_url,
             &categories,
-            None,
-            None,
+            ZipNote::none(),
         )
         .await;
     }
@@ -261,14 +260,38 @@ async fn digest_one(
         &row,
         &mut detail,
         &categories,
-        &zip_path,
-        &fetched.sha256,
-        fetched.len,
-        fetched.etag,
-        fetched.last_modified,
+        FetchedZip {
+            path: &zip_path,
+            sha256: &fetched.sha256,
+            bytes: fetched.len,
+            etag: fetched.etag,
+            last_modified: fetched.last_modified,
+        },
         base_fresh,
     )
     .await
+}
+
+struct FetchedZip<'a> {
+    path: &'a Path,
+    sha256: &'a str,
+    bytes: u64,
+    etag: Option<String>,
+    last_modified: Option<String>,
+}
+
+struct ZipNote<'a> {
+    sha256: Option<&'a str>,
+    bytes: Option<i64>,
+}
+
+impl ZipNote<'static> {
+    fn none() -> Self {
+        Self {
+            sha256: None,
+            bytes: None,
+        }
+    }
 }
 
 async fn digest_zip(
@@ -277,19 +300,15 @@ async fn digest_zip(
     row: &db::InnovationRow,
     detail: &mut Detail,
     categories: &[String],
-    zip_path: &std::path::Path,
-    sha: &str,
-    len: u64,
-    etag: Option<String>,
-    last_modified: Option<String>,
+    zip: FetchedZip<'_>,
     base_fresh: bool,
 ) -> Result<Outcome> {
-    if base_fresh && row.zip_sha256.as_deref() == Some(sha) {
+    if base_fresh && row.zip_sha256.as_deref() == Some(zip.sha256) {
         return Ok(Outcome::Skipped);
     }
-    let scratch = zip_path.with_file_name("scratch");
+    let scratch = zip.path.with_file_name("scratch");
     std::fs::create_dir_all(&scratch)?;
-    let mut session = match ArchiveSession::open(zip_path, &scratch) {
+    let mut session = match ArchiveSession::open(zip.path, &scratch) {
         Ok(session) => session,
         Err(err) => {
             tracing::warn!(slug = row.slug, error = %err, "archive unreadable");
@@ -304,8 +323,10 @@ async fn digest_zip(
                 detail,
                 &row.page_url,
                 categories,
-                Some(sha),
-                Some(len as i64),
+                ZipNote {
+                    sha256: Some(zip.sha256),
+                    bytes: Some(zip.bytes as i64),
+                },
             )
             .await;
         }
@@ -314,7 +335,7 @@ async fn digest_zip(
     tracing::info!(
         slug = row.slug,
         documents = docs.len(),
-        bytes = len,
+        bytes = zip.bytes,
         "archive indexed"
     );
     let digest = agent::run(llm, detail, &row.page_url, categories, Some(&mut session)).await?;
@@ -329,7 +350,7 @@ async fn digest_zip(
     if let Some(obj) = raw.as_object_mut() {
         obj.insert("agent_version".into(), json!(agent::AGENT_VERSION));
         obj.insert("model".into(), json!(llm.model()));
-        obj.insert("zip_sha256".into(), json!(sha));
+        obj.insert("zip_sha256".into(), json!(zip.sha256));
     }
     db::save_digest(
         pool,
@@ -339,10 +360,10 @@ async fn digest_zip(
             json: &raw,
             agent_version: agent::AGENT_VERSION,
             model: llm.model(),
-            zip_sha256: Some(sha),
-            zip_bytes: Some(len as i64),
-            zip_etag: etag.as_deref(),
-            zip_last_modified: last_modified.as_deref(),
+            zip_sha256: Some(zip.sha256),
+            zip_bytes: Some(zip.bytes as i64),
+            zip_etag: zip.etag.as_deref(),
+            zip_last_modified: zip.last_modified.as_deref(),
         },
         &docs,
         session.cached(),
@@ -373,8 +394,7 @@ async fn finish(
     detail: &Detail,
     page_url: &str,
     categories: &[String],
-    zip_sha256: Option<&str>,
-    zip_bytes: Option<i64>,
+    zip: ZipNote<'_>,
 ) -> Result<Outcome> {
     let digest = agent::run(llm, detail, page_url, categories, None).await?;
     tracing::info!(
@@ -396,8 +416,8 @@ async fn finish(
             json: &raw,
             agent_version: agent::AGENT_VERSION,
             model: llm.model(),
-            zip_sha256,
-            zip_bytes,
+            zip_sha256: zip.sha256,
+            zip_bytes: zip.bytes,
             zip_etag: None,
             zip_last_modified: None,
         },

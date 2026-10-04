@@ -1,5 +1,4 @@
 mod agent;
-mod config;
 mod db;
 mod extract;
 mod http;
@@ -8,7 +7,7 @@ mod scrape;
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
-use config::Config;
+use styrta::config::Config;
 
 #[derive(Parser)]
 #[command(name = "styrta", version)]
@@ -67,7 +66,7 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let cfg = Config::load()?;
+    let cfg = Config::load_ingest()?;
     let pool = db::pool(&cfg).await?;
     db::migrate(&pool).await?;
 

@@ -91,7 +91,7 @@ impl Client {
         let text = String::from_utf8_lossy(bytes);
         Error::Status {
             code: status.as_u16(),
-            body: truncate(&self.endpoint.scrub(&text), 400),
+            body: crate::endpoint::truncate(&self.endpoint.scrub(&text), 400),
         }
     }
 }
@@ -159,10 +159,6 @@ fn take_vectors(mut items: Vec<EmbedItem>, expected: usize) -> Result<Vec<Vec<f3
     Ok(out)
 }
 
-fn truncate(text: &str, max: usize) -> String {
-    text.chars().take(max).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,6 +211,7 @@ mod tests {
             jwt_secret: "jwt-secret-value".into(),
             database_url: "postgres://127.0.0.1/styrta".into(),
             audio_dir: std::path::PathBuf::from("/var/lib/styrta/audio"),
+            work_dir: std::path::PathBuf::from("/tmp/styrta-ingest"),
         }
     }
 

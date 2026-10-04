@@ -63,6 +63,10 @@ impl Endpoint {
     }
 }
 
+pub(crate) fn truncate(text: &str, max: usize) -> String {
+    text.chars().take(max).collect()
+}
+
 fn authorize(builder: RequestBuilder, key: &str) -> RequestBuilder {
     if key.is_empty() {
         builder

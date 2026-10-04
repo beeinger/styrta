@@ -446,7 +446,7 @@ fn user_prompt(
     }
     for section in &detail.sections {
         sections.push_str(&section.heading);
-        sections.push_str("\n");
+        sections.push('\n');
         sections.push_str(&section.body);
         sections.push_str("\n\n");
     }

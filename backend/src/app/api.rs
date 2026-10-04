@@ -16,6 +16,8 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tower_http::trace::TraceLayer;
+use utoipa::{Modify, OpenApi, ToSchema};
+use utoipa_swagger_ui::SwaggerUi;
 use uuid::Uuid;
 
 use crate::appdb::{self, Store};
@@ -42,13 +44,15 @@ pub struct AppState {
     pub embedder: Arc<dyn Embedder>,
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+/// New account. `locale` defaults to `pl`. `en` selects English replies.
+#[derive(Clone, Debug, serde::Deserialize, ToSchema)]
 pub struct CreateUser {
     pub display_name: String,
     pub locale: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+/// Access and refresh tokens for a new account.
+#[derive(Clone, Debug, Serialize, ToSchema)]
 pub struct Session {
     pub id: Uuid,
     pub display_name: String,
@@ -58,12 +62,12 @@ pub struct Session {
     pub refresh_expires_at: chrono::DateTime<Utc>,
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, ToSchema)]
 pub struct Refresh {
     pub refresh_token: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ToSchema)]
 pub struct Refreshed {
     pub access_token: String,
     pub refresh_token: String,
@@ -71,7 +75,7 @@ pub struct Refreshed {
     pub refresh_expires_at: chrono::DateTime<Utc>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ToSchema)]
 pub struct Me {
     pub id: Uuid,
     pub display_name: String,
@@ -86,7 +90,8 @@ pub struct Me {
     pub dislikes: Vec<String>,
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct NearbyQuery {
     pub lat: f64,
     pub lng: f64,
@@ -94,7 +99,7 @@ pub struct NearbyQuery {
     pub bbox: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ToSchema)]
 pub struct NearbyEvent {
     pub id: Uuid,
     pub title: String,
@@ -108,7 +113,9 @@ pub struct NearbyEvent {
     pub host_name: String,
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+/// `emoji` omitted: the server accepts the turn and chooses one grapheme.
+/// `emoji` set: the event is created in this request.
+#[derive(Clone, Debug, serde::Deserialize, ToSchema)]
 pub struct CreateEvent {
     pub title: String,
     pub emoji: Option<String>,
@@ -123,13 +130,14 @@ pub struct CreateEvent {
     pub activity_tags: Vec<String>,
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct MessageQuery {
     pub before: Option<Uuid>,
     pub limit: Option<i64>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ToSchema)]
 pub struct HistoryMessage {
     pub id: Uuid,
     pub role: String,
@@ -137,17 +145,18 @@ pub struct HistoryMessage {
     pub created_at: chrono::DateTime<Utc>,
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+/// JSON body for a text turn. Audio turns are `multipart/form-data` with a file field named `audio`.
+#[derive(Clone, Debug, serde::Deserialize, ToSchema)]
 pub struct PostMessage {
     pub text: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ToSchema)]
 pub struct AcceptedTurn {
     pub turn_id: Uuid,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ToSchema)]
 pub struct TurnView {
     pub status: String,
     pub user_text: Option<String>,
@@ -163,9 +172,19 @@ struct ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let body = serde_json::json!({ "error": self.message });
-        (self.status, Json(body)).into_response()
+        (
+            self.status,
+            Json(ErrorBody {
+                error: self.message.to_string(),
+            }),
+        )
+            .into_response()
     }
+}
+
+#[derive(Serialize, ToSchema)]
+struct ErrorBody {
+    error: String,
 }
 
 fn bad(message: &'static str) -> ApiError {
@@ -204,7 +223,7 @@ fn internal() -> ApiError {
 }
 
 pub fn router(state: AppState) -> Router {
-    Router::new()
+    let api = Router::new()
         .route("/v1/users", post(create_user))
         .route("/v1/auth/refresh", post(refresh_session))
         .route("/v1/stream", get(user_stream))
@@ -225,8 +244,76 @@ pub fn router(state: AppState) -> Router {
         ))
         .layer(DefaultBodyLimit::max(AUDIO_LIMIT))
         .layer(TraceLayer::new_for_http())
-        .with_state(state)
+        .with_state(state);
+    api.merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", ApiDoc::openapi()))
 }
+
+struct BearerAuth;
+
+impl Modify for BearerAuth {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        let components = openapi.components.get_or_insert_with(Default::default);
+        components.add_security_scheme(
+            "bearer",
+            utoipa::openapi::security::SecurityScheme::Http(
+                utoipa::openapi::security::HttpBuilder::new()
+                    .scheme(utoipa::openapi::security::HttpAuthScheme::Bearer)
+                    .bearer_format("JWT")
+                    .description(Some(
+                        "Access token from POST /v1/users or POST /v1/auth/refresh.",
+                    ))
+                    .build(),
+            ),
+        );
+    }
+}
+
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = "Styrta",
+        version = "0.1.0",
+        description = "Nearby meetups. Swagger UI is served at /docs. Send `Authorization: Bearer <access_token>` on every route except POST /v1/users and POST /v1/auth/refresh."
+    ),
+    modifiers(&BearerAuth),
+    tags(
+        (name = "account", description = "Sign-up and token refresh"),
+        (name = "profile", description = "The signed-in person"),
+        (name = "events", description = "Public meetups"),
+        (name = "chat", description = "Turns, history, and speech"),
+        (name = "stream", description = "Server-sent events for one user"),
+    ),
+    paths(
+        create_user,
+        refresh_session,
+        user_stream,
+        get_me,
+        patch_me,
+        nearby,
+        get_event,
+        create_event,
+        join_event,
+        cancel_event,
+        complete_event,
+        my_events,
+        list_messages,
+        post_message,
+        get_turn,
+        get_audio,
+    ),
+    components(schemas(
+        ErrorBody,
+        crate::sse::TurnRef,
+        crate::sse::TranscriptReady,
+        crate::sse::ToolStarted,
+        crate::sse::ToolFinished,
+        crate::sse::ReplyDelta,
+        crate::sse::ReplyDone,
+        crate::sse::AudioReady,
+        crate::sse::TurnFailed,
+    ))
+)]
+struct ApiDoc;
 
 pub fn harness_services(state: &AppState) -> Services<'_> {
     Services {
@@ -281,6 +368,16 @@ fn issue_pair(secret: &str, user_id: Uuid) -> Result<(auth::Issued, auth::Issued
     Ok((access, refresh))
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/users",
+    tag = "account",
+    request_body = CreateUser,
+    responses(
+        (status = 200, body = Session),
+        (status = 400, description = "Empty display name", body = ErrorBody),
+    )
+)]
 async fn create_user(
     State(state): State<AppState>,
     Json(body): Json<CreateUser>,
@@ -306,6 +403,16 @@ async fn create_user(
     }))
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/auth/refresh",
+    tag = "account",
+    request_body = Refresh,
+    responses(
+        (status = 200, body = Refreshed),
+        (status = 401, description = "Refresh token missing or expired", body = ErrorBody),
+    )
+)]
 async fn refresh_session(
     State(state): State<AppState>,
     Json(body): Json<Refresh>,
@@ -325,6 +432,19 @@ async fn refresh_session(
     }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/stream",
+    tag = "stream",
+    params(
+        ("Last-Event-ID" = Option<i64>, Header, description = "Replay events with a greater id, then follow. Omit it to follow only new events.")
+    ),
+    responses(
+        (status = 200, description = "text/event-stream. Each event has an id and a named type: turn.started, transcript.ready, tool.started, tool.finished, reply.delta, reply.done, audio.ready, turn.done, turn.failed. Heartbeats are comment lines. Payload shapes are the components TurnRef, TranscriptReady, ToolStarted, ToolFinished, ReplyDelta, ReplyDone, AudioReady, and TurnFailed.", content_type = "text/event-stream"),
+        (status = 401, body = ErrorBody),
+    ),
+    security(("bearer" = []))
+)]
 async fn user_stream(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
@@ -448,6 +568,13 @@ fn tagged_frames(events: &[appdb::StreamEvent]) -> Vec<sse::TaggedFrame> {
         .collect()
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/me",
+    tag = "profile",
+    responses((status = 200, body = Me), (status = 401, body = ErrorBody)),
+    security(("bearer" = []))
+)]
 async fn get_me(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
@@ -455,6 +582,18 @@ async fn get_me(
     Ok(Json(load_me(&state, claims.sub).await?))
 }
 
+#[utoipa::path(
+    patch,
+    path = "/v1/me",
+    tag = "profile",
+    request_body = appdb::ProfilePatch,
+    responses(
+        (status = 200, body = Me),
+        (status = 400, body = ErrorBody),
+        (status = 401, body = ErrorBody),
+    ),
+    security(("bearer" = []))
+)]
 async fn patch_me(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
@@ -490,6 +629,18 @@ fn me_from(user: appdb::User, profile: appdb::Profile) -> Me {
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/events/nearby",
+    tag = "events",
+    params(NearbyQuery),
+    responses(
+        (status = 200, description = "Ranked for the caller's stored profile vector. A pan does not embed a new query.", body = Vec<NearbyEvent>),
+        (status = 400, body = ErrorBody),
+        (status = 401, body = ErrorBody),
+    ),
+    security(("bearer" = []))
+)]
 async fn nearby(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
@@ -511,18 +662,19 @@ async fn nearby(
     };
     let candidates = state
         .store
-        .nearby_candidates(origin, radius_m, bounds, now)
+        .nearby_candidates(claims.sub, origin, radius_m, bounds, now)
         .await
         .map_err(map_store)?;
     let profile = state.store.profile(claims.sub).await.map_err(map_store)?;
-    let profile = rank_profile(&profile);
+    let profile = tools::rank_profile(&profile);
+    let want = profile.embedding.clone();
     let ranked = rank::rank_events(&rank::RankInput {
         profile: &profile,
         origin,
         radius_m,
         bounds,
         now,
-        want_embedding: None,
+        want_embedding: want.as_deref(),
         events: &candidates,
     })
     .map_err(|err| {
@@ -530,20 +682,6 @@ async fn nearby(
         internal()
     })?;
     Ok(Json(ranked.into_iter().map(nearby_event).collect()))
-}
-
-fn rank_profile(profile: &appdb::Profile) -> rank::Profile {
-    rank::Profile {
-        age_band: profile.age_band.clone(),
-        gender: profile.gender.clone(),
-        mobility: profile.mobility.clone(),
-        sportiness: profile.sportiness,
-        likes: profile.likes.clone(),
-        dislikes: profile.dislikes.clone(),
-        women_only: profile.women_only,
-        time_window: profile.time_window,
-        embedding: profile.embedding.as_ref().map(|vector| vector.to_vec()),
-    }
 }
 
 fn nearby_event(event: rank::ScoredEvent) -> NearbyEvent {
@@ -561,6 +699,18 @@ fn nearby_event(event: rank::ScoredEvent) -> NearbyEvent {
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/events/{id}",
+    tag = "events",
+    params(("id" = Uuid, Path, description = "Event id")),
+    responses(
+        (status = 200, body = EventBody),
+        (status = 401, body = ErrorBody),
+        (status = 404, body = ErrorBody),
+    ),
+    security(("bearer" = []))
+)]
 async fn get_event(
     State(state): State<AppState>,
     Extension(_claims): Extension<Claims>,
@@ -570,6 +720,19 @@ async fn get_event(
     Ok(Json(event_body(event)))
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/events",
+    tag = "events",
+    request_body = CreateEvent,
+    responses(
+        (status = 201, description = "Emoji was supplied, so the event exists now.", body = EventBody),
+        (status = 202, description = "Emoji is being chosen. Poll the turn.", body = AcceptedTurn),
+        (status = 400, body = ErrorBody),
+        (status = 401, body = ErrorBody),
+    ),
+    security(("bearer" = []))
+)]
 async fn create_event(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
@@ -719,6 +882,19 @@ async fn finish_create(
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/events/{id}/join",
+    tag = "events",
+    params(("id" = Uuid, Path, description = "Event id")),
+    responses(
+        (status = 200, body = AttendanceBody),
+        (status = 401, body = ErrorBody),
+        (status = 404, body = ErrorBody),
+        (status = 409, description = "The event is full", body = ErrorBody),
+    ),
+    security(("bearer" = []))
+)]
 async fn join_event(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
@@ -733,6 +909,18 @@ async fn join_event(
     )
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/events/{id}/cancel",
+    tag = "events",
+    params(("id" = Uuid, Path, description = "Event id")),
+    responses(
+        (status = 200, body = AttendanceBody),
+        (status = 401, body = ErrorBody),
+        (status = 404, body = ErrorBody),
+    ),
+    security(("bearer" = []))
+)]
 async fn cancel_event(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
@@ -747,6 +935,18 @@ async fn cancel_event(
     )
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/events/{id}/complete",
+    tag = "events",
+    params(("id" = Uuid, Path, description = "Event id")),
+    responses(
+        (status = 200, body = AttendanceBody),
+        (status = 401, body = ErrorBody),
+        (status = 404, body = ErrorBody),
+    ),
+    security(("bearer" = []))
+)]
 async fn complete_event(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
@@ -769,6 +969,16 @@ fn attendance(row: appdb::Attendance) -> Result<Json<AttendanceBody>, ApiError> 
     }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/me/events",
+    tag = "events",
+    responses(
+        (status = 200, body = Vec<EventBody>),
+        (status = 401, body = ErrorBody),
+    ),
+    security(("bearer" = []))
+)]
 async fn my_events(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
@@ -781,6 +991,18 @@ async fn my_events(
     Ok(Json(events.into_iter().map(event_body).collect()))
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/chat/messages",
+    tag = "chat",
+    params(MessageQuery),
+    responses(
+        (status = 200, body = Vec<HistoryMessage>),
+        (status = 400, body = ErrorBody),
+        (status = 401, body = ErrorBody),
+    ),
+    security(("bearer" = []))
+)]
 async fn list_messages(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
@@ -795,6 +1017,18 @@ async fn list_messages(
     Ok(Json(messages.into_iter().map(history_message).collect()))
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/chat/messages",
+    tag = "chat",
+    request_body(content = PostMessage, description = "JSON `{ \"text\": \"...\" }`, or multipart/form-data with an `audio` file.", content_type = "application/json"),
+    responses(
+        (status = 202, body = AcceptedTurn),
+        (status = 400, body = ErrorBody),
+        (status = 401, body = ErrorBody),
+    ),
+    security(("bearer" = []))
+)]
 async fn post_message(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
@@ -908,6 +1142,18 @@ async fn fail_chat(state: &AppState, user_id: Uuid, turn_id: Uuid, message: &str
     .await;
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/chat/turns/{id}",
+    tag = "chat",
+    params(("id" = Uuid, Path, description = "Turn id")),
+    responses(
+        (status = 200, body = TurnView),
+        (status = 401, body = ErrorBody),
+        (status = 404, body = ErrorBody),
+    ),
+    security(("bearer" = []))
+)]
 async fn get_turn(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
@@ -918,6 +1164,18 @@ async fn get_turn(
     Ok(Json(turn_view(turn, audio_ready)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/chat/turns/{id}/audio",
+    tag = "chat",
+    params(("id" = Uuid, Path, description = "Turn id")),
+    responses(
+        (status = 200, description = "Spoken reply. Content-Type matches the stored audio.", content_type = "application/octet-stream"),
+        (status = 401, body = ErrorBody),
+        (status = 404, body = ErrorBody),
+    ),
+    security(("bearer" = []))
+)]
 async fn get_audio(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
@@ -1130,17 +1388,11 @@ fn store_status(label: &str) -> StatusCode {
     }
 }
 
-fn map_rank(err: rank::Error, message: &'static str) -> ApiError {
-    let label = format!("{err:?}").to_ascii_lowercase();
-    if label.contains("notimplemented") {
-        tracing::error!(error = %err, "rank");
-        internal()
-    } else {
-        bad(message)
-    }
+fn map_rank(_err: rank::Error, message: &'static str) -> ApiError {
+    bad(message)
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct EventBody {
     id: Uuid,
     host_id: Uuid,
@@ -1183,7 +1435,7 @@ fn event_body(event: appdb::Event) -> EventBody {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct AttendanceBody {
     event_id: Uuid,
     user_id: Uuid,
@@ -1209,6 +1461,32 @@ mod tests {
     use std::time::Duration;
 
     const SECRET: &str = "test-jwt-secret";
+
+    #[test]
+    fn openapi_lists_every_http_route() {
+        let spec = ApiDoc::openapi();
+        for path in [
+            "/v1/users",
+            "/v1/auth/refresh",
+            "/v1/stream",
+            "/v1/me",
+            "/v1/events/nearby",
+            "/v1/events/{id}",
+            "/v1/events",
+            "/v1/events/{id}/join",
+            "/v1/events/{id}/cancel",
+            "/v1/events/{id}/complete",
+            "/v1/me/events",
+            "/v1/chat/messages",
+            "/v1/chat/turns/{id}",
+            "/v1/chat/turns/{id}/audio",
+        ] {
+            assert!(spec.paths.paths.contains_key(path), "{path}");
+        }
+        let json = spec.to_pretty_json().unwrap();
+        assert!(json.contains("bearer"), "{json}");
+        assert!(json.contains("turn.started"));
+    }
 
     #[test]
     fn refresh_token_on_access_route_is_unauthorized() {
@@ -1278,14 +1556,7 @@ mod tests {
         assert_eq!(store_status("Full"), StatusCode::CONFLICT);
         assert_eq!(store_status("NotFound"), StatusCode::NOT_FOUND);
         assert_eq!(store_status("no rows"), StatusCode::NOT_FOUND);
-        assert_eq!(
-            store_status("NotImplemented"),
-            StatusCode::INTERNAL_SERVER_ERROR
-        );
-        assert_eq!(
-            map_store(appdb::Error::NotImplemented).status,
-            StatusCode::INTERNAL_SERVER_ERROR
-        );
+        assert_eq!(store_status("Database"), StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(
             map_store(appdb::Error::Capacity).status,
             StatusCode::CONFLICT
@@ -1334,6 +1605,39 @@ mod tests {
             audio_type(std::path::Path::new("reply.mp3"), b"not-audio"),
             "audio/mpeg"
         );
+    }
+
+    #[tokio::test]
+    async fn swagger_ui_and_openapi_json_are_public() {
+        let server = running().await;
+        let client = http();
+        let docs = client
+            .get(format!("{}/docs", server.base))
+            .send()
+            .await
+            .unwrap();
+        assert!(docs.status().is_success(), "{}", docs.status());
+        let docs_type = docs
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let docs_body = docs.text().await.unwrap();
+        assert!(
+            docs_type.contains("text/html") || docs_body.contains("swagger"),
+            "{docs_type} {docs_body}"
+        );
+        let spec = client
+            .get(format!("{}/api-docs/openapi.json", server.base))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(spec.status(), StatusCode::OK);
+        let body = spec.text().await.unwrap();
+        assert!(body.contains("/v1/events/nearby"), "{body}");
+        assert!(body.contains("/v1/chat/messages"), "{body}");
+        assert!(body.contains("bearer"), "{body}");
     }
 
     #[tokio::test]
@@ -1451,9 +1755,9 @@ mod tests {
         let audio = "/tmp/styrta-http-audio";
         std::fs::create_dir_all(audio).unwrap();
         let values = [
-            ("OPENAI_BASE_URL", "http://127.0.0.1:9"),
-            ("OPENAI_API_KEY", "test-llm-key"),
-            ("OPENAI_MODEL", "test-model"),
+            ("LLM_BASE_URL", "http://127.0.0.1:9"),
+            ("LLM_API_KEY", "test-llm-key"),
+            ("LLM_MODEL", "test-model"),
             ("SPEECH_BASE_URL", "http://127.0.0.1:9"),
             ("STT_MODEL", "stt"),
             ("TTS_MODEL", "tts"),
@@ -2061,7 +2365,7 @@ mod tests {
             _input: crate::embed::Input,
             texts: &[String],
         ) -> Result<Vec<Vec<f32>>, crate::embed::Error> {
-            Ok(vec![vec![0.0; texts.len()]])
+            Ok(texts.iter().map(|_| vec![0.0; 1024]).collect())
         }
     }
 }

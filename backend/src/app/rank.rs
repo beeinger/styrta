@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 pub const PEOPLE_WEIGHT: f64 = 0.45;
@@ -22,7 +23,6 @@ const DAY_MINUTES: u16 = 24 * 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
-    NotImplemented,
     NonFinite,
     BadBBox,
 }
@@ -30,7 +30,6 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotImplemented => f.write_str("not implemented"),
             Self::NonFinite => f.write_str("non-finite latitude or zoom"),
             Self::BadBBox => f.write_str("bbox must be four finite numbers: west,south,east,north"),
         }
@@ -45,7 +44,7 @@ pub struct LatLng {
     pub lng: f64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct TimeWindow {
     /// Inclusive start, minutes from local midnight.
     pub start_minute: u16,
@@ -61,7 +60,7 @@ pub struct BBox {
     pub north: f64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PlaceKind {
     Cafe,
@@ -78,7 +77,7 @@ impl PlaceKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum EventStatus {
     Scheduled,
@@ -275,8 +274,8 @@ pub fn rank_people(input: &PeopleInput<'_>) -> Result<Vec<PersonHit>, Error> {
             input.profile.embedding.as_deref(),
             person.embedding.as_deref(),
         ) {
-            (Some(profile), Some(person)) => cosine(profile, person),
-            _ => 0.0,
+            (Some(profile), Some(person)) => Some(cosine(profile, person)),
+            _ => None,
         };
         let similarity = similarity(
             input.profile,
@@ -301,8 +300,7 @@ pub fn rank_people(input: &PeopleInput<'_>) -> Result<Vec<PersonHit>, Error> {
         });
     }
     ranked.sort_by(|a, b| {
-        b.profile_cosine
-            .total_cmp(&a.profile_cosine)
+        cmp_optional_desc(a.profile_cosine, b.profile_cosine)
             .then(b.similarity.total_cmp(&a.similarity))
             .then(a.distance_m.total_cmp(&b.distance_m))
             .then(a.id.cmp(&b.id))
@@ -342,7 +340,7 @@ pub fn parse_bbox(text: &str) -> Result<BBox, Error> {
 }
 
 struct RankedPerson {
-    profile_cosine: f64,
+    profile_cosine: Option<f64>,
     similarity: f64,
     distance_m: f64,
     id: Uuid,
@@ -368,29 +366,78 @@ fn to_scored(event: &Candidate, score: f64, distance_m: f64) -> ScoredEvent {
 }
 
 fn score_event(profile: &Profile, event: &Candidate, distance_m: f64, want: Option<&[f32]>) -> f64 {
+    let mut weighted = 0.0;
+    let mut weight = 0.0;
+    if let Some(people) = mean_attendee_similarity(profile, &event.attendees) {
+        weighted += PEOPLE_WEIGHT * people;
+        weight += PEOPLE_WEIGHT;
+    }
     let near = (-distance_m / DISTANCE_SCALE_M).exp();
-    let text = match (event.embedding.as_deref(), want) {
-        (Some(event), Some(want)) => cosine(event, want),
-        _ => 0.0,
-    };
+    weighted += DISTANCE_WEIGHT * near;
+    weight += DISTANCE_WEIGHT;
+    if let (Some(event_vec), Some(want_vec)) = (event.embedding.as_deref(), want) {
+        weighted += TEXT_WEIGHT * cosine(event_vec, want_vec);
+        weight += TEXT_WEIGHT;
+    }
     let time = time_fit(profile.time_window, event.starts_at);
-    let base = match mean_attendee_similarity(profile, &event.attendees) {
-        Some(people) => {
-            PEOPLE_WEIGHT * people
-                + DISTANCE_WEIGHT * near
-                + TEXT_WEIGHT * text
-                + TIME_WEIGHT * time
-        }
-        None => {
-            let rest = DISTANCE_WEIGHT + TEXT_WEIGHT + TIME_WEIGHT;
-            (DISTANCE_WEIGHT * near + TEXT_WEIGHT * text + TIME_WEIGHT * time) / rest
-        }
-    };
+    weighted += TIME_WEIGHT * time;
+    weight += TIME_WEIGHT;
+    let base = weighted / weight;
     if event.promoted {
         base + PROMOTED_BONUS
     } else {
         base
     }
+}
+
+/// A missing cosine sorts after every real one. `sort_by` wants the higher value first.
+fn cmp_optional_desc(a: Option<f64>, b: Option<f64>) -> std::cmp::Ordering {
+    match (a, b) {
+        (Some(a), Some(b)) => b.total_cmp(&a),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+}
+
+/// Company fit is a rule, not a cosine. "Lonely" and "wants company" are far apart in embedding space.
+pub fn company_complements(
+    left_likes: &[String],
+    left_notes: &[(String, String)],
+    right_likes: &[String],
+    right_notes: &[(String, String)],
+) -> bool {
+    let (left_lonely, left_company) = company_signals(left_likes, left_notes);
+    let (right_lonely, right_company) = company_signals(right_likes, right_notes);
+    if (left_lonely && right_company) || (right_lonely && left_company) {
+        return true;
+    }
+    left_company && right_company && shares_like(left_likes, right_likes)
+}
+
+fn company_signals(likes: &[String], notes: &[(String, String)]) -> (bool, bool) {
+    let mut lonely = false;
+    let mut company = false;
+    for text in likes.iter().map(String::as_str).chain(
+        notes
+            .iter()
+            .flat_map(|(key, value)| [key.as_str(), value.as_str()]),
+    ) {
+        let folded = text.to_lowercase();
+        if folded.contains("lonely") || folded.contains("lives alone") || folded.contains("samotn")
+        {
+            lonely = true;
+        }
+        if folded.contains("wants company") || folded.contains("towarzystwo") {
+            company = true;
+        }
+    }
+    (lonely, company)
+}
+
+fn shares_like(left: &[String], right: &[String]) -> bool {
+    let right = tag_set(right);
+    tag_set(left).iter().any(|tag| right.contains(tag))
 }
 
 fn mean_attendee_similarity(profile: &Profile, attendees: &[Attendee]) -> Option<f64> {
@@ -1108,9 +1155,74 @@ mod tests {
         );
         assert_eq!(hits[0].id, Uuid::from_u128(1));
         assert!(hits[0].score > hits[1].score);
-        let expected =
-            (DISTANCE_WEIGHT + TIME_WEIGHT) / (DISTANCE_WEIGHT + TEXT_WEIGHT + TIME_WEIGHT);
+        let expected = (DISTANCE_WEIGHT + TIME_WEIGHT) / (DISTANCE_WEIGHT + TIME_WEIGHT);
         close(hits[0].score, expected);
+    }
+
+    #[test]
+    fn want_vector_reorders_events_and_a_missing_vector_is_not_zero() {
+        let mut profile = profile();
+        profile.age_band = Some("25-34".to_string());
+        let mut chess = event(1, "Chess");
+        chess.embedding = Some(vec![1.0, 0.0]);
+        let mut walk = event(2, "Walk");
+        walk.embedding = Some(vec![0.0, 1.0]);
+        let bare = event(3, "Bare");
+        let now = at(2026, 6, 15, 8, 0);
+        let toward_chess = rank_events(&RankInput {
+            profile: &profile,
+            origin: ORIGIN,
+            radius_m: 30_000.0,
+            bounds: None,
+            now,
+            want_embedding: Some(&[1.0, 0.0]),
+            events: &[walk.clone(), bare.clone(), chess.clone()],
+        })
+        .unwrap();
+        assert_eq!(toward_chess[0].id, Uuid::from_u128(1));
+        let toward_walk = rank_events(&RankInput {
+            profile: &profile,
+            origin: ORIGIN,
+            radius_m: 30_000.0,
+            bounds: None,
+            now,
+            want_embedding: Some(&[0.0, 1.0]),
+            events: &[chess, walk, bare],
+        })
+        .unwrap();
+        assert_eq!(toward_walk[0].id, Uuid::from_u128(2));
+        assert!(toward_walk.iter().any(|hit| hit.id == Uuid::from_u128(3)));
+        let orthogonal = toward_chess
+            .iter()
+            .find(|hit| hit.id == Uuid::from_u128(2))
+            .unwrap()
+            .score;
+        let missing = toward_chess
+            .iter()
+            .find(|hit| hit.id == Uuid::from_u128(3))
+            .unwrap()
+            .score;
+        assert!(missing > orthogonal);
+    }
+
+    #[test]
+    fn company_complement_is_a_rule() {
+        let lonely = vec!["samotna".to_string()];
+        let company = vec!["towarzystwo".to_string()];
+        let coffee = vec!["coffee".to_string()];
+        let wants = vec![("social".to_string(), "wants company".to_string())];
+        let alone = vec![("home".to_string(), "lives alone".to_string())];
+        assert!(company_complements(&lonely, &[], &company, &[]));
+        assert!(company_complements(&[], &alone, &[], &wants));
+        assert!(company_complements(
+            &["towarzystwo".to_string(), "coffee".to_string()],
+            &[],
+            &["wants company".to_string(), "coffee".to_string()],
+            &[],
+        ));
+        assert!(!company_complements(&lonely, &[], &lonely, &[]));
+        assert!(!company_complements(&company, &[], &coffee, &[]));
+        assert!(!company_complements(&coffee, &[], &coffee, &[]));
     }
 
     #[test]
@@ -1290,10 +1402,11 @@ mod tests {
                 .unwrap()
                 .score
         };
-        close(by_id(1), PEOPLE_WEIGHT + DISTANCE_WEIGHT + TIME_WEIGHT);
+        let used = PEOPLE_WEIGHT + DISTANCE_WEIGHT + TIME_WEIGHT;
+        close(by_id(1), used / used);
         close(
             by_id(2),
-            PEOPLE_WEIGHT * 0.5 + DISTANCE_WEIGHT + TIME_WEIGHT,
+            (PEOPLE_WEIGHT * 0.5 + DISTANCE_WEIGHT + TIME_WEIGHT) / used,
         );
     }
 

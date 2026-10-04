@@ -66,7 +66,7 @@ impl Client {
         let text = String::from_utf8_lossy(bytes);
         Error::Status {
             code: status.as_u16(),
-            body: truncate(&self.endpoint.scrub(&text), 400),
+            body: crate::endpoint::truncate(&self.endpoint.scrub(&text), 400),
         }
     }
 
@@ -150,10 +150,6 @@ fn audio_filename(mime: &str) -> &'static str {
     }
 }
 
-fn truncate(text: &str, max: usize) -> String {
-    text.chars().take(max).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,10 +187,10 @@ mod tests {
 
     fn config(base: &str, speech_key: &str) -> Config {
         let map: std::collections::HashMap<String, String> = [
-            ("OPENAI_BASE_URL", "http://127.0.0.1:9/v1"),
-            ("OPENAI_API_KEY", CHAT_KEY),
-            ("OPENAI_MODEL", "chat-model"),
-            ("OPENAI_TIMEOUT_SECS", "5"),
+            ("LLM_BASE_URL", "http://127.0.0.1:9/v1"),
+            ("LLM_API_KEY", CHAT_KEY),
+            ("LLM_MODEL", "chat-model"),
+            ("LLM_TIMEOUT_SECS", "5"),
             ("SPEECH_BASE_URL", base),
             ("SPEECH_API_KEY", speech_key),
             ("STT_MODEL", "stt-model"),

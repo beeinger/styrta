@@ -31,14 +31,30 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let store = connect_store(&config).await?;
     let model = llm::Client::new(&config).context("chat client")?;
     let speech = speech::Client::new(&config).context("speech client")?;
-    let embedder = embed::Client::new(&config).context("embed client")?;
+    let client = embed::Client::new(&config).context("embed client")?;
+    client
+        .check_dimension()
+        .await
+        .map_err(|err| anyhow!("{err}"))
+        .context("embed dimension")?;
+    let embedder: Arc<dyn embed::Embedder> = Arc::new(client);
+    let store = store.with_embedder(Arc::clone(&embedder), &config.embed_model);
+    let filler = store.clone();
+    tokio::spawn(async move {
+        match filler.fill_embeddings().await {
+            Ok((profiles, events, chunks)) => {
+                tracing::info!(profiles, events, chunks, "embedding fill");
+            }
+            Err(err) => tracing::error!(error = %err, "embedding fill"),
+        }
+    });
 
     let state = AppState {
         config: Arc::new(config),
         store,
         model: Arc::new(model),
         speech: Arc::new(speech),
-        embedder: Arc::new(embedder),
+        embedder,
     };
     styrta::harness::resume_running(api::harness_services(&state))
         .await
@@ -56,12 +72,20 @@ async fn serve(config: Config) -> anyhow::Result<()> {
 async fn embed_missing() -> anyhow::Result<()> {
     let config = Config::load_embed_job()?;
     let store = connect_store(&config).await?;
-    let embedder = embed::Client::new(&config).context("embed client")?;
-    let wrote = styrta::knowledge::embed_missing(store.pool(), &embedder, &config.embed_model)
+    let client = embed::Client::new(&config).context("embed client")?;
+    client
+        .check_dimension()
+        .await
+        .map_err(|err| anyhow!("{err}"))
+        .context("embed dimension")?;
+    let embedder: Arc<dyn embed::Embedder> = Arc::new(client);
+    let store = store.with_embedder(embedder, &config.embed_model);
+    let (profiles, events, chunks) = store
+        .fill_embeddings()
         .await
         .map_err(|err| anyhow!("{err}"))
         .context("embed missing")?;
-    tracing::info!(chunks = wrote, "embedded");
+    tracing::info!(profiles, events, chunks, "embedded");
     Ok(())
 }
 

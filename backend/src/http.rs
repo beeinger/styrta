@@ -247,7 +247,7 @@ fn meta_charset(bytes: &[u8]) -> Option<String> {
     let idx = lower.find(marker)?;
     let rest = &lower[idx + marker.len()..];
     let end = rest
-        .find(|c: char| c == '"' || c == '\'' || c == ';' || c == ' ' || c == '>')
+        .find(|c: char| ['"', '\'', ';', ' ', '>'].contains(&c))
         .unwrap_or(rest.len());
     let label = rest[..end].trim();
     if label.is_empty() {

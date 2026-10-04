@@ -507,10 +507,11 @@ async fn search_events<S: HarnessStore>(
     let profile = rank_profile(&ctx.store.profile(ctx.user_id).await.map_err(failed)?);
     let candidates = ctx
         .store
-        .nearby_candidates(origin, rank::MAX_RADIUS_M, None, ctx.now)
+        .nearby_candidates(ctx.user_id, origin, rank::MAX_RADIUS_M, None, ctx.now)
         .await
         .map_err(failed)?;
-    let want = embed_query(ctx.embedder, args.query.as_deref()).await;
+    let query_vector = embed_query(ctx.embedder, args.query.as_deref()).await;
+    let want = event_want(query_vector, profile.embedding.as_deref());
     let ranked = rank::rank_events(&rank::RankInput {
         profile: &profile,
         origin,
@@ -679,7 +680,15 @@ async fn embed_query(embedder: &dyn Embedder, query: Option<&str>) -> Option<Vec
     }
 }
 
-fn rank_profile(profile: &Profile) -> rank::Profile {
+/// A search string is the want. With no string, the stored profile vector is the want.
+pub(crate) fn event_want(query: Option<Vec<f32>>, profile: Option<&[f32]>) -> Option<Vec<f32>> {
+    if let Some(query) = query {
+        return Some(query);
+    }
+    profile.map(|vector| vector.to_vec())
+}
+
+pub(crate) fn rank_profile(profile: &Profile) -> rank::Profile {
     rank::Profile {
         age_band: profile.age_band.clone(),
         gender: profile.gender.clone(),
@@ -853,6 +862,21 @@ mod tests {
             assert!(ToolName::parse(name.as_str()).is_some());
         }
         assert!(ToolName::parse("drop_table").is_none());
+    }
+
+    #[test]
+    fn event_want_uses_the_query_vector_then_the_profile_vector() {
+        let query = vec![1.0, 0.0];
+        let profile = vec![0.0, 1.0];
+        assert_eq!(
+            event_want(Some(query.clone()), Some(&profile)).as_deref(),
+            Some(query.as_slice())
+        );
+        assert_eq!(
+            event_want(None, Some(&profile)).as_deref(),
+            Some(profile.as_slice())
+        );
+        assert_eq!(event_want(None, None), None);
     }
 
     #[test]

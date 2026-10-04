@@ -4,12 +4,12 @@
 
 # DATABASE_URL="postgres://styrta:password@127.0.0.1:5432/styrta"
 # STYRTA_WORK_DIR="/tmp/styrta-ingest"
-# OPENAI_BASE_URL="http://127.0.0.1:9/v1"
-# OPENAI_API_KEY="replace-me"
-# OPENAI_MODEL="replace-me"
-# OPENAI_TIMEOUT_SECS="120"
+# LLM_BASE_URL="http://127.0.0.1:9/v1"
+# LLM_API_KEY="replace-me"
+# LLM_MODEL="replace-me"
+# LLM_TIMEOUT_SECS="120"
 # Optional chat User-Agent. Empty or unset sends no User-Agent header.
-# OPENAI_USER_AGENT=""
+# LLM_USER_AGENT=""
 # SPEECH_BASE_URL="http://127.0.0.1:9/v1"
 # SPEECH_API_KEY=""
 # STT_MODEL="replace-me"

@@ -1,12 +1,15 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::PgPool;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
+use crate::embed::{Embedder, Input, DIMENSION};
 use crate::rank;
 pub use crate::rank::{EventStatus, PlaceKind, TimeWindow};
 
@@ -15,7 +18,6 @@ const EARTH_RADIUS_M: f64 = 6_371_000.0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
-    NotImplemented,
     NotFound,
     EmptyTopic,
     Capacity,
@@ -26,7 +28,6 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotImplemented => f.write_str("not implemented"),
             Self::NotFound => f.write_str("not found"),
             Self::EmptyTopic => f.write_str("empty topic"),
             Self::Capacity => f.write_str("event is full"),
@@ -41,6 +42,8 @@ impl std::error::Error for Error {}
 #[derive(Clone)]
 pub struct Store {
     pool: PgPool,
+    embedder: Option<Arc<dyn Embedder>>,
+    embed_model: Arc<str>,
 }
 
 impl std::fmt::Debug for Store {
@@ -53,7 +56,19 @@ impl Store {
     pub async fn connect(database_url: &str) -> Result<Self, Error> {
         let pool = PgPool::connect(database_url).await.map_err(db)?;
         migrate(&pool).await?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            embedder: None,
+            embed_model: Arc::from(""),
+        })
+    }
+
+    pub fn with_embedder(self, embedder: Arc<dyn Embedder>, model: &str) -> Self {
+        Self {
+            pool: self.pool,
+            embedder: Some(embedder),
+            embed_model: Arc::from(model),
+        }
     }
 
     pub fn pool(&self) -> &PgPool {
@@ -205,6 +220,9 @@ impl Store {
             upsert_tag(&mut tx, user_id, tag, "dislike").await?;
         }
         tx.commit().await.map_err(db)?;
+        if patch.bio.is_some() || patch.like_tag.is_some() || patch.dislike_tag.is_some() {
+            self.refresh_profile_embedding(user_id).await;
+        }
         self.profile(user_id).await
     }
 
@@ -241,7 +259,11 @@ impl Store {
         .fetch_one(&self.pool)
         .await
         .map_err(db)?;
-        memory_from_row(row)
+        let saved = memory_from_row(row)?;
+        if saved.durability == Durability::LongTerm {
+            self.refresh_profile_embedding(user_id).await;
+        }
+        Ok(saved)
     }
 
     pub async fn forget(&self, user_id: Uuid, topic: &str) -> Result<ForgetResult, Error> {
@@ -249,6 +271,7 @@ impl Store {
         if topic.is_empty() {
             return Err(Error::EmptyTopic);
         }
+        let pattern = like_contains(topic);
         let mut tx = self.pool.begin().await.map_err(db)?;
         let memories: Vec<MemoryRow> = sqlx::query_as(
             r#"
@@ -256,9 +279,9 @@ impl Store {
                 DELETE FROM memories
                 WHERE user_id = $1
                   AND (
-                      strpos(lower(key), lower($2)) > 0
-                      OR strpos(lower(value), lower($2)) > 0
-                      OR strpos(lower(coalesce(quote, '')), lower($2)) > 0
+                      key ILIKE $2 ESCAPE '\'
+                      OR value ILIKE $2 ESCAPE '\'
+                      OR coalesce(quote, '') ILIKE $2 ESCAPE '\'
                   )
                 RETURNING id, durability, key, value, quote, confidence, confirmed
             )
@@ -268,7 +291,7 @@ impl Store {
             "#,
         )
         .bind(user_id)
-        .bind(topic)
+        .bind(&pattern)
         .fetch_all(&mut *tx)
         .await
         .map_err(db)?;
@@ -276,18 +299,25 @@ impl Store {
             r#"
             WITH removed AS (
                 DELETE FROM profile_tags
-                WHERE user_id = $1 AND strpos(lower(tag), lower($2)) > 0
+                WHERE user_id = $1 AND tag ILIKE $2 ESCAPE '\'
                 RETURNING tag
             )
             SELECT tag FROM removed ORDER BY tag
             "#,
         )
         .bind(user_id)
-        .bind(topic)
+        .bind(&pattern)
         .fetch_all(&mut *tx)
         .await
         .map_err(db)?;
+        let refresh = memories
+            .iter()
+            .any(|memory| memory.durability == "long_term")
+            || !tags.is_empty();
         tx.commit().await.map_err(db)?;
+        if refresh {
+            self.refresh_profile_embedding(user_id).await;
+        }
         Ok(ForgetResult {
             memories: memories
                 .into_iter()
@@ -333,6 +363,8 @@ impl Store {
         .await
         .map_err(db)?;
         tx.commit().await.map_err(db)?;
+        let created = self.event(event_id).await?;
+        self.write_event_embedding(&created).await;
         self.event(event_id).await
     }
 
@@ -347,6 +379,7 @@ impl Store {
 
     pub async fn nearby_candidates(
         &self,
+        viewer: Uuid,
         origin: rank::LatLng,
         radius_m: f64,
         bounds: Option<rank::BBox>,
@@ -394,16 +427,25 @@ impl Store {
             .fetch_all(&self.pool)
             .await
             .map_err(db)?;
+        let embeddings: HashMap<Uuid, Vec<f32>> = rows
+            .iter()
+            .filter_map(|row| {
+                row.embedding
+                    .as_ref()
+                    .map(|vector| (row.id, vector.to_vec()))
+            })
+            .collect();
         let events = rows
             .into_iter()
             .map(event_from_row)
             .collect::<Result<Vec<_>, _>>()?;
-        let attendees = self.going_attendees(&events).await?;
+        let attendees = self.going_attendees(viewer, &events).await?;
         Ok(events
             .into_iter()
             .map(|event| {
+                let embedding = embeddings.get(&event.id).cloned();
                 let attendees = attendees.get(&event.id).cloned().unwrap_or_default();
-                candidate(event, attendees)
+                candidate(event, embedding, attendees)
             })
             .collect())
     }
@@ -519,11 +561,17 @@ impl Store {
                         WHERE t.user_id = u.id AND t.polarity = 'like'),
                        '{{}}'::text[]
                    ) AS tags,
+                   COALESCE(
+                       (SELECT jsonb_agg(jsonb_build_object('key', m.key, 'value', m.value) ORDER BY m.key, m.id)
+                        FROM memories m
+                        WHERE m.user_id = u.id AND m.durability = 'long_term'),
+                       '[]'::jsonb
+                   ) AS notes,
                    loc.lat,
                    loc.lon
             FROM users u
             JOIN profiles pr ON pr.user_id = u.id
-            LEFT JOIN LATERAL (
+            JOIN LATERAL (
                 SELECT pl.lat, pl.lon
                 FROM events e
                 JOIN places pl ON pl.id = e.place_id
@@ -544,7 +592,12 @@ impl Store {
         .fetch_all(&self.pool)
         .await
         .map_err(db)?;
-        rows.into_iter().map(person_from_row).collect()
+        let viewer_profile = self.profile(viewer).await?;
+        let viewer_notes = long_term_notes(&self.memories(viewer).await?);
+        rows.into_iter()
+            .map(|row| person_from_row(row, &viewer_profile.likes, &viewer_notes))
+            .collect::<Result<Vec<_>, _>>()
+            .map(|people| people.into_iter().flatten().collect())
     }
 
     pub async fn conversation(&self, user_id: Uuid) -> Result<Conversation, Error> {
@@ -883,12 +936,15 @@ impl Store {
 
     async fn going_attendees(
         &self,
+        viewer: Uuid,
         events: &[Event],
     ) -> Result<HashMap<Uuid, Vec<rank::Attendee>>, Error> {
         let ids: Vec<Uuid> = events.iter().map(|event| event.id).collect();
         if ids.is_empty() {
             return Ok(HashMap::new());
         }
+        let viewer_profile = self.profile(viewer).await?;
+        let viewer_notes = long_term_notes(&self.memories(viewer).await?);
         let rows: Vec<AttendeeRow> = sqlx::query_as(
             r#"
             SELECT a.event_id,
@@ -900,7 +956,13 @@ impl Store {
                         FROM profile_tags t
                         WHERE t.user_id = a.user_id AND t.polarity = 'like'),
                        '{}'::text[]
-                   ) AS tags
+                   ) AS tags,
+                   COALESCE(
+                       (SELECT jsonb_agg(jsonb_build_object('key', m.key, 'value', m.value) ORDER BY m.key, m.id)
+                        FROM memories m
+                        WHERE m.user_id = a.user_id AND m.durability = 'long_term'),
+                       '[]'::jsonb
+                   ) AS notes
             FROM attendances a
             LEFT JOIN profiles pr ON pr.user_id = a.user_id
             WHERE a.status = 'going' AND a.event_id = ANY($1)
@@ -913,18 +975,168 @@ impl Store {
         .map_err(db)?;
         let mut grouped: HashMap<Uuid, Vec<rank::Attendee>> = HashMap::new();
         for row in rows {
+            let notes = note_pairs(&row.notes);
             grouped
                 .entry(row.event_id)
                 .or_default()
                 .push(rank::Attendee {
                     age_band: row.age_band,
                     sportiness: row.sportiness,
-                    tags: row.tags,
+                    tags: row.tags.clone(),
                     embedding: row.embedding.map(|vector| vector.to_vec()),
-                    complements: false,
+                    complements: rank::company_complements(
+                        &viewer_profile.likes,
+                        &viewer_notes,
+                        &row.tags,
+                        &notes,
+                    ),
                 });
         }
         Ok(grouped)
+    }
+
+    async fn refresh_profile_embedding(&self, user_id: Uuid) {
+        let Some(embedder) = &self.embedder else {
+            return;
+        };
+        let model = self.embed_model.clone();
+        let profile = match self.profile(user_id).await {
+            Ok(profile) => profile,
+            Err(err) => {
+                tracing::warn!(%user_id, error = %err, "profile embedding skipped");
+                return;
+            }
+        };
+        let memories = match self.memories(user_id).await {
+            Ok(memories) => memories,
+            Err(err) => {
+                tracing::warn!(%user_id, error = %err, "profile embedding skipped");
+                return;
+            }
+        };
+        let paragraph = profile_paragraph(&profile, &memories);
+        if paragraph.is_empty() {
+            if let Err(err) = self
+                .store_profile_vector(user_id, None, Some(model.as_ref()))
+                .await
+            {
+                tracing::warn!(%user_id, error = %err, "profile embedding clear failed");
+            }
+            return;
+        }
+        match embedder.embed(Input::Passage, &[paragraph]).await {
+            Ok(vectors) => {
+                let vector = vectors
+                    .into_iter()
+                    .next()
+                    .filter(|vector| vector.len() == DIMENSION);
+                if vector.is_none() {
+                    tracing::warn!(%user_id, "profile embedding width or count was wrong");
+                }
+                if let Err(err) = self.store_profile_vector(user_id, vector, None).await {
+                    tracing::warn!(%user_id, error = %err, "profile embedding write failed");
+                }
+            }
+            Err(err) => {
+                tracing::warn!(%user_id, error = %err, "profile embedding failed");
+                if let Err(err) = self.store_profile_vector(user_id, None, None).await {
+                    tracing::warn!(%user_id, error = %err, "profile embedding clear failed");
+                }
+            }
+        }
+    }
+
+    async fn store_profile_vector(
+        &self,
+        user_id: Uuid,
+        vector: Option<Vec<f32>>,
+        model: Option<&str>,
+    ) -> Result<(), Error> {
+        let model = vector.as_ref().map(|_| self.embed_model.as_ref()).or(model);
+        sqlx::query("UPDATE profiles SET embedding = $2, embedding_model = $3 WHERE user_id = $1")
+            .bind(user_id)
+            .bind(vector.map(pgvector::Vector::from))
+            .bind(model)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+
+    async fn write_event_embedding(&self, event: &Event) {
+        let Some(embedder) = &self.embedder else {
+            return;
+        };
+        let passage = event_passage(event);
+        match embedder.embed(Input::Passage, &[passage]).await {
+            Ok(vectors) => {
+                let vector = vectors
+                    .into_iter()
+                    .next()
+                    .filter(|vector| vector.len() == DIMENSION);
+                let model = vector.as_ref().map(|_| self.embed_model.as_ref());
+                if vector.is_none() {
+                    tracing::warn!(event_id = %event.id, "event embedding width or count was wrong");
+                }
+                if let Err(err) = self.store_event_vector(event.id, vector, model).await {
+                    tracing::warn!(event_id = %event.id, error = %err, "event embedding write failed");
+                }
+            }
+            Err(err) => {
+                tracing::warn!(event_id = %event.id, error = %err, "event embedding failed");
+                if let Err(err) = self.store_event_vector(event.id, None, None).await {
+                    tracing::warn!(event_id = %event.id, error = %err, "event embedding clear failed");
+                }
+            }
+        }
+    }
+
+    async fn store_event_vector(
+        &self,
+        event_id: Uuid,
+        vector: Option<Vec<f32>>,
+        model: Option<&str>,
+    ) -> Result<(), Error> {
+        sqlx::query("UPDATE events SET embedding = $2, embedding_model = $3 WHERE id = $1")
+            .bind(event_id)
+            .bind(vector.map(pgvector::Vector::from))
+            .bind(model)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+
+    pub async fn fill_embeddings(&self) -> Result<(u64, u64, u64), Error> {
+        let embedder = self.embedder.as_ref().ok_or(Error::Invalid)?;
+        let model = self.embed_model.as_ref();
+        let profiles: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT user_id FROM profiles WHERE embedding_model IS DISTINCT FROM $1",
+        )
+        .bind(model)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        let profile_count = profiles.len() as u64;
+        for user_id in profiles {
+            self.refresh_profile_embedding(user_id).await;
+        }
+        let events: Vec<Uuid> =
+            sqlx::query_scalar("SELECT id FROM events WHERE embedding_model IS DISTINCT FROM $1")
+                .bind(model)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(db)?;
+        let event_count = events.len() as u64;
+        for event_id in events {
+            if let Ok(event) = self.event(event_id).await {
+                self.write_event_embedding(&event).await;
+            }
+        }
+        let chunks = crate::knowledge::embed_missing(&self.pool, embedder.as_ref(), model)
+            .await
+            .map_err(|err| Error::Database(err.to_string()))?;
+        Ok((profile_count, event_count, chunks))
     }
 }
 
@@ -947,6 +1159,7 @@ const EVENT_COLUMNS: &str = r#"
     p.kind AS place_kind,
     p.lat AS latitude,
     p.lon AS longitude,
+    e.embedding,
     (SELECT count(*)::bigint FROM attendances a WHERE a.event_id = e.id AND a.status = 'going') AS signed_count
 "#;
 
@@ -1275,7 +1488,11 @@ fn event_from_row(row: EventRow) -> Result<Event, Error> {
     })
 }
 
-fn candidate(event: Event, attendees: Vec<rank::Attendee>) -> rank::Candidate {
+fn candidate(
+    event: Event,
+    embedding: Option<Vec<f32>>,
+    attendees: Vec<rank::Attendee>,
+) -> rank::Candidate {
     rank::Candidate {
         id: event.id,
         title: event.title,
@@ -1293,27 +1510,108 @@ fn candidate(event: Event, attendees: Vec<rank::Attendee>) -> rank::Candidate {
         longitude: event.longitude,
         host_name: event.host_name,
         signed_count: event.signed_count,
-        embedding: None,
+        embedding,
         attendees,
     }
 }
 
-fn person_from_row(row: PersonRow) -> Result<rank::Person, Error> {
-    Ok(rank::Person {
+fn person_from_row(
+    row: PersonRow,
+    viewer_likes: &[String],
+    viewer_notes: &[(String, String)],
+) -> Result<Option<rank::Person>, Error> {
+    let (Some(latitude), Some(longitude)) = (row.lat, row.lon) else {
+        return Ok(None);
+    };
+    let notes = note_pairs(&row.notes);
+    Ok(Some(rank::Person {
         id: row.id,
         first_name: row.first_name,
         age_band: row.age_band,
         gender: row.gender,
         mobility: None,
         sportiness: row.sportiness,
-        tags: row.tags,
+        tags: row.tags.clone(),
         women_only: row.women_only,
         time_window: time_window(row.start_minute, row.end_minute)?,
         embedding: row.embedding.map(|vector| vector.to_vec()),
-        latitude: row.lat.unwrap_or(0.0),
-        longitude: row.lon.unwrap_or(0.0),
-        complements: false,
-    })
+        latitude,
+        longitude,
+        complements: rank::company_complements(viewer_likes, viewer_notes, &row.tags, &notes),
+    }))
+}
+
+pub fn profile_paragraph(profile: &Profile, memories: &[Memory]) -> String {
+    let mut lines = Vec::new();
+    if let Some(bio) = profile
+        .bio
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        lines.push(bio.to_string());
+    }
+    if !profile.likes.is_empty() {
+        lines.push(format!("likes: {}", profile.likes.join(", ")));
+    }
+    if !profile.dislikes.is_empty() {
+        lines.push(format!("dislikes: {}", profile.dislikes.join(", ")));
+    }
+    let mut notes: Vec<&Memory> = memories
+        .iter()
+        .filter(|memory| memory.durability == Durability::LongTerm)
+        .collect();
+    notes.sort_by(|left, right| left.key.cmp(&right.key).then(left.id.cmp(&right.id)));
+    for memory in notes {
+        let key = memory.key.trim();
+        let value = memory.value.trim();
+        if key.is_empty() && value.is_empty() {
+            continue;
+        }
+        lines.push(format!("{key}: {value}"));
+    }
+    lines.join("\n")
+}
+
+fn event_passage(event: &Event) -> String {
+    let mut lines = vec![event.title.trim().to_string()];
+    if let Some(description) = event
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        lines.push(description.to_string());
+    }
+    if !event.activity_tags.is_empty() {
+        lines.push(event.activity_tags.join(", "));
+    }
+    lines.join("\n")
+}
+
+fn long_term_notes(memories: &[Memory]) -> Vec<(String, String)> {
+    memories
+        .iter()
+        .filter(|memory| memory.durability == Durability::LongTerm)
+        .map(|memory| (memory.key.clone(), memory.value.clone()))
+        .collect()
+}
+
+fn note_pairs(value: &Value) -> Vec<(String, String)> {
+    value
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    Some((
+                        item.get("key")?.as_str()?.to_string(),
+                        item.get("value")?.as_str()?.to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn chat_message(row: MessageRow) -> Result<ChatMessage, Error> {
@@ -1385,6 +1683,7 @@ struct EventRow {
     place_kind: String,
     latitude: f64,
     longitude: f64,
+    embedding: Option<pgvector::Vector>,
     signed_count: i64,
 }
 
@@ -1395,6 +1694,7 @@ struct AttendeeRow {
     sportiness: Option<i16>,
     embedding: Option<pgvector::Vector>,
     tags: Vec<String>,
+    notes: Value,
 }
 
 #[derive(sqlx::FromRow)]
@@ -1409,6 +1709,7 @@ struct PersonRow {
     end_minute: Option<i16>,
     embedding: Option<pgvector::Vector>,
     tags: Vec<String>,
+    notes: Value,
     lat: Option<f64>,
     lon: Option<f64>,
 }
@@ -1457,7 +1758,8 @@ pub struct Profile {
     pub embedding_model: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+/// Partial profile update. Only fields that are present are written.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, ToSchema)]
 pub struct ProfilePatch {
     #[serde(default)]
     pub display_name: Option<String>,
@@ -1552,7 +1854,7 @@ pub struct Event {
     pub signed_count: i64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AttendanceStatus {
     Going,
@@ -1624,6 +1926,27 @@ pub struct StreamEvent {
 mod tests {
     use super::*;
     use chrono::Duration;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct RecordingEmbedder {
+        calls: Mutex<Vec<(Input, Vec<String>)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Embedder for RecordingEmbedder {
+        async fn embed(
+            &self,
+            input: Input,
+            texts: &[String],
+        ) -> Result<Vec<Vec<f32>>, crate::embed::Error> {
+            self.calls
+                .lock()
+                .expect("calls")
+                .push((input, texts.to_vec()));
+            Ok(texts.iter().map(|_| vec![0.2; DIMENSION]).collect())
+        }
+    }
 
     fn live_url() -> &'static str {
         static URL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -1711,7 +2034,7 @@ mod tests {
                 .fetch_all(store.pool())
                 .await
                 .unwrap_or_else(|err| panic!("versions: {}", redact(&err.to_string())));
-                assert_eq!(versions, vec![1, 2]);
+                assert_eq!(versions, vec![1, 2, 3]);
                 store.pool().close().await;
                 again.pool().close().await;
             })
@@ -2067,7 +2390,7 @@ mod tests {
 
         let now = Utc::now();
         let found = store
-            .nearby_candidates(origin, 500.0, None, now)
+            .nearby_candidates(host.id, origin, 500.0, None, now)
             .await
             .unwrap();
         assert!(found.iter().any(|event| event.id == near.id));
@@ -2076,6 +2399,19 @@ mod tests {
         assert!(found.iter().all(|event| event.id != expired.id));
         let near_hit = found.iter().find(|event| event.id == near.id).unwrap();
         assert!(near_hit.embedding.is_none());
+        let event_vector = pgvector::Vector::from(vec![0.5_f32; 1024]);
+        sqlx::query("UPDATE events SET embedding = $2 WHERE id = $1")
+            .bind(near.id)
+            .bind(&event_vector)
+            .execute(store.pool())
+            .await
+            .unwrap();
+        let found = store
+            .nearby_candidates(host.id, origin, 500.0, None, now)
+            .await
+            .unwrap();
+        let near_hit = found.iter().find(|event| event.id == near.id).unwrap();
+        assert_eq!(near_hit.embedding.as_ref().unwrap().len(), 1024);
         assert_eq!(near_hit.signed_count, 1);
         assert_eq!(near_hit.attendees.len(), 1);
         assert!(!near_hit.attendees[0].complements);
@@ -2093,7 +2429,7 @@ mod tests {
             north: 51.5,
         };
         let boxed = store
-            .nearby_candidates(origin, 500.0, Some(bounds), now)
+            .nearby_candidates(host.id, origin, 500.0, Some(bounds), now)
             .await
             .unwrap();
         assert!(boxed.iter().any(|event| event.id == far.id));
@@ -2111,6 +2447,184 @@ mod tests {
         assert!((person.latitude - 50.002).abs() < 1e-6);
         assert!((person.longitude - 20.0).abs() < 1e-6);
         assert!(people.iter().all(|person| person.id != viewer.id));
+        let nowhere = store.create_user("Nowhere", "pl").await.unwrap();
+        let people = store.people(viewer.id, origin).await.unwrap();
+        assert!(people.iter().all(|person| person.id != nowhere.id));
+    }
+
+    #[test]
+    fn profile_paragraph_omits_quotes_mobility_and_short_term() {
+        let profile = Profile {
+            user_id: Uuid::nil(),
+            age_band: None,
+            gender: None,
+            mobility: Some("wheelchair".into()),
+            sportiness: None,
+            bio: Some("likes parks".into()),
+            likes: vec!["chess".into()],
+            dislikes: vec!["golf".into()],
+            women_only: false,
+            time_window: None,
+            embedding: None,
+            embedding_model: None,
+        };
+        let memories = vec![
+            Memory {
+                id: Uuid::from_u128(1),
+                durability: Durability::LongTerm,
+                key: "home".into(),
+                value: "lives alone".into(),
+                quote: Some("secret quote".into()),
+                confidence: None,
+                confirmed: true,
+            },
+            Memory {
+                id: Uuid::from_u128(2),
+                durability: Durability::ShortTerm,
+                key: "today".into(),
+                value: "ephemeral errand".into(),
+                quote: None,
+                confidence: None,
+                confirmed: true,
+            },
+        ];
+        let text = profile_paragraph(&profile, &memories);
+        assert!(text.contains("likes parks"), "{text}");
+        assert!(text.contains("likes: chess"), "{text}");
+        assert!(text.contains("dislikes: golf"), "{text}");
+        assert!(text.contains("home: lives alone"), "{text}");
+        assert!(!text.contains("wheelchair"), "{text}");
+        assert!(!text.contains("secret quote"), "{text}");
+        assert!(!text.contains("ephemeral"), "{text}");
+        assert!(profile_paragraph(
+            &Profile {
+                bio: None,
+                likes: vec![],
+                dislikes: vec![],
+                ..profile
+            },
+            &[],
+        )
+        .is_empty());
+    }
+
+    #[tokio::test]
+    async fn long_term_memory_reembeds_and_short_term_does_not() {
+        let recorder = Arc::new(RecordingEmbedder::default());
+        let store = schema_store()
+            .await
+            .with_embedder(Arc::clone(&recorder) as Arc<dyn Embedder>, "test-model");
+        let user = store.create_user("Embed", "pl").await.unwrap();
+        store
+            .remember(
+                user.id,
+                NewMemory {
+                    durability: Durability::ShortTerm,
+                    key: "today".into(),
+                    value: "ephemeral errand".into(),
+                    quote: None,
+                    confidence: None,
+                },
+            )
+            .await
+            .unwrap();
+        let profile = store.profile(user.id).await.unwrap();
+        assert!(profile.embedding.is_none());
+        assert!(recorder.calls.lock().unwrap().is_empty());
+
+        store
+            .remember(
+                user.id,
+                NewMemory {
+                    durability: Durability::LongTerm,
+                    key: "home".into(),
+                    value: "lives alone".into(),
+                    quote: Some("secret quote".into()),
+                    confidence: None,
+                },
+            )
+            .await
+            .unwrap();
+        let profile = store.profile(user.id).await.unwrap();
+        assert!(profile.embedding.is_some());
+        assert_eq!(profile.embedding_model.as_deref(), Some("test-model"));
+        let calls = recorder.calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, Input::Passage);
+        assert!(
+            calls[0].1[0].contains("home: lives alone"),
+            "{}",
+            calls[0].1[0]
+        );
+        assert!(!calls[0].1[0].contains("secret quote"), "{}", calls[0].1[0]);
+        assert!(!calls[0].1[0].contains("ephemeral"), "{}", calls[0].1[0]);
+    }
+
+    #[tokio::test]
+    async fn company_complement_is_set_on_attendees_and_people() {
+        let store = schema_store().await;
+        let lonely = store.create_user("Lonely", "pl").await.unwrap();
+        let company = store.create_user("Company", "pl").await.unwrap();
+        let other = store.create_user("Other", "pl").await.unwrap();
+        for (id, tag) in [
+            (lonely.id, "samotna"),
+            (company.id, "towarzystwo"),
+            (other.id, "coffee"),
+        ] {
+            store
+                .apply_profile(
+                    id,
+                    &ProfilePatch {
+                        like_tag: Some(tag.into()),
+                        ..ProfilePatch::default()
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        let event = store
+            .create_event(lonely.id, new_event("walk", 50.0, 20.0, None, soon(2)))
+            .await
+            .unwrap();
+        store.join_event(event.id, lonely.id).await.unwrap();
+        store.join_event(event.id, company.id).await.unwrap();
+        store.join_event(event.id, other.id).await.unwrap();
+        let origin = rank::LatLng {
+            lat: 50.0,
+            lng: 20.0,
+        };
+        let found = store
+            .nearby_candidates(lonely.id, origin, 5_000.0, None, Utc::now())
+            .await
+            .unwrap();
+        let hit = found.iter().find(|item| item.id == event.id).unwrap();
+        let company_row = hit
+            .attendees
+            .iter()
+            .find(|attendee| attendee.tags.iter().any(|tag| tag == "towarzystwo"))
+            .unwrap();
+        let other_row = hit
+            .attendees
+            .iter()
+            .find(|attendee| attendee.tags.iter().any(|tag| tag == "coffee"))
+            .unwrap();
+        assert!(company_row.complements);
+        assert!(!other_row.complements);
+        let people = store.people(lonely.id, origin).await.unwrap();
+        assert!(
+            people
+                .iter()
+                .find(|person| person.id == company.id)
+                .unwrap()
+                .complements
+        );
+        assert!(
+            !people
+                .iter()
+                .find(|person| person.id == other.id)
+                .unwrap()
+                .complements
+        );
     }
 
     #[tokio::test]
@@ -2243,7 +2757,7 @@ mod tests {
                 .fetch_all(store.pool())
                 .await
                 .unwrap();
-        assert_eq!(versions, vec![1, 2]);
+        assert_eq!(versions, vec![1, 2, 3]);
     }
 
     async fn ingest_counts(pool: &PgPool) -> (i64, i64, i64, i64, i64) {

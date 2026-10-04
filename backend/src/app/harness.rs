@@ -158,6 +158,7 @@ pub trait HarnessStore: Send + Sync {
     ) -> Result<Attendance, StoreError>;
     async fn nearby_candidates(
         &self,
+        viewer: Uuid,
         origin: rank::LatLng,
         radius_m: f64,
         bounds: Option<rank::BBox>,
@@ -343,12 +344,13 @@ impl HarnessStore for Store {
 
     async fn nearby_candidates(
         &self,
+        viewer: Uuid,
         origin: rank::LatLng,
         radius_m: f64,
         bounds: Option<rank::BBox>,
         now: DateTime<Utc>,
     ) -> Result<Vec<Candidate>, StoreError> {
-        Store::nearby_candidates(self, origin, radius_m, bounds, now)
+        Store::nearby_candidates(self, viewer, origin, radius_m, bounds, now)
             .await
             .map_err(StoreError::new)
     }
@@ -679,8 +681,7 @@ async fn fresh<S: HarnessStore>(
         conversation.summary.as_deref(),
         &recent,
         &user_text,
-    )
-    .map_err(|err| Error::Prompt(err.to_string()))?;
+    );
     let checkpoint = Checkpoint {
         round: 0,
         messages,
@@ -1760,6 +1761,7 @@ mod tests {
 
         async fn nearby_candidates(
             &self,
+            _viewer: Uuid,
             _origin: rank::LatLng,
             _radius_m: f64,
             _bounds: Option<rank::BBox>,
@@ -1819,9 +1821,9 @@ mod tests {
     fn test_config(audio_dir: &Path) -> Config {
         let mut map = HashMap::<String, String>::new();
         for (key, value) in [
-            ("OPENAI_BASE_URL", "http://127.0.0.1:9/v1"),
-            ("OPENAI_API_KEY", "test-llm-key"),
-            ("OPENAI_MODEL", "chat"),
+            ("LLM_BASE_URL", "http://127.0.0.1:9/v1"),
+            ("LLM_API_KEY", "test-llm-key"),
+            ("LLM_MODEL", "chat"),
             ("SPEECH_BASE_URL", "http://127.0.0.1:9/speech"),
             ("SPEECH_API_KEY", ""),
             ("STT_MODEL", "stt"),
