@@ -21,6 +21,7 @@ pub enum Error {
     NotFound,
     EmptyTopic,
     Capacity,
+    Taken,
     Invalid,
     Database(String),
 }
@@ -31,6 +32,7 @@ impl std::fmt::Display for Error {
             Self::NotFound => f.write_str("not found"),
             Self::EmptyTopic => f.write_str("empty topic"),
             Self::Capacity => f.write_str("event is full"),
+            Self::Taken => f.write_str("email taken"),
             Self::Invalid => f.write_str("invalid value"),
             Self::Database(message) => write!(f, "database error: {message}"),
         }
@@ -75,40 +77,62 @@ impl Store {
         &self.pool
     }
 
-    pub async fn create_user(&self, display_name: &str, locale: &str) -> Result<User, Error> {
+    pub async fn create_user(&self, new: &NewUser) -> Result<User, Error> {
+        let email = crate::auth::normalize_email(&new.email).ok_or(Error::Invalid)?;
+        let display_name = new.display_name.trim();
+        let locale = new.locale.trim();
+        if display_name.is_empty() || locale.is_empty() || new.password_hash.is_empty() {
+            return Err(Error::Invalid);
+        }
         let mut tx = self.pool.begin().await.map_err(db)?;
-        let (id, display_name, locale): (Uuid, String, String) = sqlx::query_as(
+        let user: User = sqlx::query_as(
             r#"
-            INSERT INTO users (display_name, locale)
-            VALUES ($1, $2)
-            RETURNING id, display_name, locale
+            INSERT INTO users (email, password_hash, display_name, locale)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id, email, display_name, locale
             "#,
         )
+        .bind(&email)
+        .bind(&new.password_hash)
         .bind(display_name)
         .bind(locale)
         .fetch_one(&mut *tx)
         .await
         .map_err(db)?;
         sqlx::query("INSERT INTO profiles (user_id) VALUES ($1)")
-            .bind(id)
+            .bind(user.id)
             .execute(&mut *tx)
             .await
             .map_err(db)?;
         sqlx::query("INSERT INTO conversations (user_id) VALUES ($1)")
-            .bind(id)
+            .bind(user.id)
             .execute(&mut *tx)
             .await
             .map_err(db)?;
         tx.commit().await.map_err(db)?;
-        Ok(User {
-            id,
-            display_name,
-            locale,
-        })
+        Ok(user)
+    }
+
+    pub async fn user_by_email(&self, email: &str) -> Result<Option<PasswordUser>, Error> {
+        let Some(email) = crate::auth::normalize_email(email) else {
+            return Ok(None);
+        };
+        let row: Option<CredentialRow> = sqlx::query_as(
+            r#"
+            SELECT id, email, display_name, locale, password_hash
+            FROM users
+            WHERE email = $1
+            "#,
+        )
+        .bind(&email)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(row.map(PasswordUser::from))
     }
 
     pub async fn user(&self, id: Uuid) -> Result<User, Error> {
-        sqlx::query_as("SELECT id, display_name, locale FROM users WHERE id = $1")
+        sqlx::query_as("SELECT id, email, display_name, locale FROM users WHERE id = $1")
             .bind(id)
             .fetch_one(&self.pool)
             .await
@@ -609,9 +633,7 @@ impl Store {
         .await
         .map_err(db)?;
         let pending_place = match row.pending_place {
-            Some(value) => Some(
-                serde_json::from_value(value).map_err(|_| Error::Invalid)?,
-            ),
+            Some(value) => Some(serde_json::from_value(value).map_err(|_| Error::Invalid)?),
             None => None,
         };
         Ok(Conversation {
@@ -628,15 +650,13 @@ impl Store {
         place: &PendingPlace,
     ) -> Result<(), Error> {
         let value = serde_json::to_value(place).map_err(|_| Error::Invalid)?;
-        let updated = sqlx::query(
-            "UPDATE conversations SET pending_place = $2 WHERE user_id = $1",
-        )
-        .bind(user_id)
-        .bind(value)
-        .execute(&self.pool)
-        .await
-        .map_err(db)?
-        .rows_affected();
+        let updated = sqlx::query("UPDATE conversations SET pending_place = $2 WHERE user_id = $1")
+            .bind(user_id)
+            .bind(value)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?
+            .rows_affected();
         if updated == 0 {
             Err(Error::NotFound)
         } else {
@@ -1313,6 +1333,12 @@ fn db(err: sqlx::Error) -> Error {
     match &err {
         sqlx::Error::RowNotFound => Error::NotFound,
         sqlx::Error::Database(inner) if inner.code().as_deref() == Some("23514") => Error::Invalid,
+        sqlx::Error::Database(inner)
+            if inner.code().as_deref() == Some("23505")
+                && inner.constraint() == Some("users_email_key") =>
+        {
+            Error::Taken
+        }
         _ => Error::Database(redact(&err.to_string())),
     }
 }
@@ -1781,8 +1807,44 @@ struct TurnRow {
 #[derive(Clone, Debug, PartialEq, Eq, sqlx::FromRow)]
 pub struct User {
     pub id: Uuid,
+    pub email: Option<String>,
     pub display_name: String,
     pub locale: String,
+}
+
+pub struct NewUser {
+    pub email: String,
+    pub password_hash: String,
+    pub display_name: String,
+    pub locale: String,
+}
+
+pub struct PasswordUser {
+    pub user: User,
+    pub password_hash: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct CredentialRow {
+    id: Uuid,
+    email: String,
+    display_name: String,
+    locale: String,
+    password_hash: String,
+}
+
+impl From<CredentialRow> for PasswordUser {
+    fn from(row: CredentialRow) -> Self {
+        Self {
+            user: User {
+                id: row.id,
+                email: Some(row.email),
+                display_name: row.display_name,
+                locale: row.locale,
+            },
+            password_hash: row.password_hash,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -2097,7 +2159,7 @@ mod tests {
                 .fetch_all(store.pool())
                 .await
                 .unwrap_or_else(|err| panic!("versions: {}", redact(&err.to_string())));
-                assert_eq!(versions, vec![1, 2, 3, 4]);
+                assert_eq!(versions, vec![1, 2, 3, 4, 5]);
                 let pending: i64 = sqlx::query_scalar(
                     "SELECT count(*)::bigint FROM information_schema.columns WHERE table_name = 'conversations' AND column_name = 'pending_place'",
                 )
@@ -2105,6 +2167,13 @@ mod tests {
                 .await
                 .unwrap_or_else(|err| panic!("pending column: {}", redact(&err.to_string())));
                 assert_eq!(pending, 1);
+                let credentials: i64 = sqlx::query_scalar(
+                    "SELECT count(*)::bigint FROM information_schema.columns WHERE table_name = 'users' AND column_name IN ('email', 'password_hash')",
+                )
+                .fetch_one(store.pool())
+                .await
+                .unwrap_or_else(|err| panic!("credential columns: {}", redact(&err.to_string())));
+                assert_eq!(credentials, 2);
                 store.pool().close().await;
                 again.pool().close().await;
             })
@@ -2140,14 +2209,37 @@ mod tests {
         }
     }
 
+    async fn add_user(store: &Store, name: &str) -> User {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let slug: String = name
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .flat_map(|ch| ch.to_lowercase())
+            .collect();
+        let slug = if slug.is_empty() {
+            "user".to_string()
+        } else {
+            slug
+        };
+        store
+            .create_user(&NewUser {
+                email: format!("{slug}-{n}@example.test"),
+                password_hash: "fixture".into(),
+                display_name: name.into(),
+                locale: "pl".into(),
+            })
+            .await
+            .unwrap_or_else(|err| panic!("{err}"))
+    }
+
     #[tokio::test]
     async fn create_user_opens_profile_and_conversation() {
         let store = schema_store().await;
-        let user = store
-            .create_user("Anna", "pl")
-            .await
-            .unwrap_or_else(|err| panic!("{err}"));
+        let user = add_user(&store, "Anna").await;
         assert_eq!(user.display_name, "Anna");
+        assert!(user.email.as_deref().unwrap().ends_with("@example.test"));
         assert_eq!(user.locale, "pl");
         let loaded = store.user(user.id).await.unwrap();
         assert_eq!(loaded, user);
@@ -2166,9 +2258,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn email_is_unique_and_legacy_rows_have_none() {
+        let store = schema_store().await;
+        let created = store
+            .create_user(&NewUser {
+                email: " Ada@Example.TEST ".into(),
+                password_hash: "fixture".into(),
+                display_name: "Ada".into(),
+                locale: "pl".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(created.email.as_deref(), Some("ada@example.test"));
+        let again = store
+            .create_user(&NewUser {
+                email: "ada@example.test".into(),
+                password_hash: "other".into(),
+                display_name: "Ada".into(),
+                locale: "pl".into(),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(again, Error::Taken);
+        let found = store
+            .user_by_email("ADA@example.test")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.user.id, created.id);
+        assert_eq!(found.password_hash, "fixture");
+        assert!(store
+            .user_by_email("missing@example.test")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(store.user_by_email("not-an-email").await.unwrap().is_none());
+
+        sqlx::query("INSERT INTO users (display_name) VALUES ('Legacy')")
+            .execute(store.pool())
+            .await
+            .unwrap();
+        let err = sqlx::query(
+            "INSERT INTO users (display_name, email) VALUES ('Half', 'half@example.test')",
+        )
+        .execute(store.pool())
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("users_credentials_pair") || err.to_string().contains("23514")
+        );
+    }
+
+    #[tokio::test]
     async fn pending_place_round_trips_and_clears() {
         let store = schema_store().await;
-        let user = store.create_user("Arena", "pl").await.unwrap();
+        let user = add_user(&store, "Arena").await;
         let place = PendingPlace {
             name: "Tauron Arena Kraków".into(),
             street: "Stanisława Lema 7".into(),
@@ -2198,7 +2342,7 @@ mod tests {
     #[tokio::test]
     async fn forget_topic_removes_tennis_and_keeps_coffee() {
         let store = schema_store().await;
-        let user = store.create_user("Basia", "pl").await.unwrap();
+        let user = add_user(&store, "Basia").await;
         store
             .remember(
                 user.id,
@@ -2264,8 +2408,8 @@ mod tests {
     #[tokio::test]
     async fn join_second_join_capacity_cancel_complete_and_my_events() {
         let store = schema_store().await;
-        let host = store.create_user("Host", "pl").await.unwrap();
-        let guest = store.create_user("Guest", "pl").await.unwrap();
+        let host = add_user(&store, "Host").await;
+        let guest = add_user(&store, "Guest").await;
         let open = store
             .create_event(host.id, new_event("open", 1.0, 1.0, None, soon(4)))
             .await
@@ -2329,8 +2473,8 @@ mod tests {
     #[tokio::test]
     async fn stream_after_is_user_scoped() {
         let store = schema_store().await;
-        let anna = store.create_user("Stream A", "pl").await.unwrap();
-        let bartek = store.create_user("Stream B", "pl").await.unwrap();
+        let anna = add_user(&store, "Stream A").await;
+        let bartek = add_user(&store, "Stream B").await;
         let turn_a = store.insert_turn(anna.id).await.unwrap();
         let turn_b = store.insert_turn(bartek.id).await.unwrap();
         let first = store
@@ -2377,7 +2521,7 @@ mod tests {
     #[tokio::test]
     async fn turns_finish_and_fail() {
         let store = schema_store().await;
-        let user = store.create_user("Turn", "pl").await.unwrap();
+        let user = add_user(&store, "Turn").await;
         let turn = store.insert_turn(user.id).await.unwrap();
         assert_eq!(turn.status, TurnStatus::Running);
         store.set_turn_user_text(turn.id, "cześć").await.unwrap();
@@ -2423,7 +2567,7 @@ mod tests {
     #[tokio::test]
     async fn nearby_candidates_filter_and_map_embeddings() {
         let store = schema_store().await;
-        let host = store.create_user("Near Host", "pl").await.unwrap();
+        let host = add_user(&store, "Near Host").await;
         store
             .apply_profile(
                 host.id,
@@ -2536,7 +2680,7 @@ mod tests {
         assert!(boxed.iter().any(|event| event.id == far.id));
         assert!(boxed.iter().all(|event| event.id != near.id));
 
-        let viewer = store.create_user("Viewer", "pl").await.unwrap();
+        let viewer = add_user(&store, "Viewer").await;
         let people = store.people(viewer.id, origin).await.unwrap();
         let person = people.iter().find(|person| person.id == host.id).unwrap();
         assert_eq!(person.first_name, "Near Host");
@@ -2548,7 +2692,7 @@ mod tests {
         assert!((person.latitude - 50.002).abs() < 1e-6);
         assert!((person.longitude - 20.0).abs() < 1e-6);
         assert!(people.iter().all(|person| person.id != viewer.id));
-        let nowhere = store.create_user("Nowhere", "pl").await.unwrap();
+        let nowhere = add_user(&store, "Nowhere").await;
         let people = store.people(viewer.id, origin).await.unwrap();
         assert!(people.iter().all(|person| person.id != nowhere.id));
     }
@@ -2615,7 +2759,7 @@ mod tests {
         let store = schema_store()
             .await
             .with_embedder(Arc::clone(&recorder) as Arc<dyn Embedder>, "test-model");
-        let user = store.create_user("Embed", "pl").await.unwrap();
+        let user = add_user(&store, "Embed").await;
         store
             .remember(
                 user.id,
@@ -2664,9 +2808,9 @@ mod tests {
     #[tokio::test]
     async fn company_complement_is_set_on_attendees_and_people() {
         let store = schema_store().await;
-        let lonely = store.create_user("Lonely", "pl").await.unwrap();
-        let company = store.create_user("Company", "pl").await.unwrap();
-        let other = store.create_user("Other", "pl").await.unwrap();
+        let lonely = add_user(&store, "Lonely").await;
+        let company = add_user(&store, "Company").await;
+        let other = add_user(&store, "Other").await;
         for (id, tag) in [
             (lonely.id, "samotna"),
             (company.id, "towarzystwo"),
@@ -2731,8 +2875,8 @@ mod tests {
     #[tokio::test]
     async fn chat_messages_page_and_search() {
         let store = schema_store().await;
-        let anna = store.create_user("Chat A", "pl").await.unwrap();
-        let bartek = store.create_user("Chat B", "pl").await.unwrap();
+        let anna = add_user(&store, "Chat A").await;
+        let bartek = add_user(&store, "Chat B").await;
         for (role, body) in [
             (ChatRole::User, "one"),
             (ChatRole::Assistant, "reply-one"),
@@ -2858,7 +3002,7 @@ mod tests {
                 .fetch_all(store.pool())
                 .await
                 .unwrap();
-        assert_eq!(versions, vec![1, 2, 3, 4]);
+        assert_eq!(versions, vec![1, 2, 3, 4, 5]);
     }
 
     async fn ingest_counts(pool: &PgPool) -> (i64, i64, i64, i64, i64) {

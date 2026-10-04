@@ -151,6 +151,56 @@ fn from_unix(seconds: i64) -> Result<DateTime<Utc>, Error> {
     DateTime::from_timestamp(seconds, 0).ok_or(Error::Invalid("exp"))
 }
 
+pub const PASSWORD_MIN_CHARS: usize = 8;
+pub const PASSWORD_MAX_CHARS: usize = 128;
+
+pub fn normalize_email(raw: &str) -> Option<String> {
+    let email = raw.trim().to_ascii_lowercase();
+    let (local, domain) = email.split_once('@')?;
+    if local.is_empty()
+        || local.len() > 64
+        || domain.len() < 3
+        || domain.len() > 253
+        || email.len() > 254
+        || domain.contains('@')
+        || !domain.contains('.')
+        || local.starts_with('.')
+        || local.ends_with('.')
+        || domain.starts_with('.')
+        || domain.ends_with('.')
+        || email
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch.is_control() || !ch.is_ascii())
+    {
+        return None;
+    }
+    Some(email)
+}
+
+pub fn acceptable_password(password: &str) -> bool {
+    let chars = password.chars().count();
+    (PASSWORD_MIN_CHARS..=PASSWORD_MAX_CHARS).contains(&chars)
+}
+
+pub fn hash_password(password: &str) -> Result<String, Error> {
+    use argon2::password_hash::{rand_core::OsRng, PasswordHasher, SaltString};
+    let salt = SaltString::generate(&mut OsRng);
+    argon2::Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map(|hash| hash.to_string())
+        .map_err(|_| Error::Invalid("password"))
+}
+
+pub fn verify_password(password: &str, encoded: &str) -> Result<bool, Error> {
+    use argon2::password_hash::{PasswordHash, PasswordVerifier};
+    let parsed = PasswordHash::new(encoded).map_err(|_| Error::Invalid("hash"))?;
+    match argon2::Argon2::default().verify_password(password.as_bytes(), &parsed) {
+        Ok(()) => Ok(true),
+        Err(argon2::password_hash::Error::Password) => Ok(false),
+        Err(_) => Err(Error::Invalid("hash")),
+    }
+}
+
 fn map_jwt(err: jsonwebtoken::errors::Error) -> Error {
     use jsonwebtoken::errors::ErrorKind;
     match err.kind() {
@@ -220,6 +270,41 @@ mod tests {
         .unwrap();
         let err = verify(SECRET, &issued.token, TokenKind::Access).unwrap_err();
         assert_eq!(err, Error::Expired);
+    }
+
+    #[test]
+    fn email_is_trimmed_and_lowercased() {
+        assert_eq!(
+            normalize_email("  Ada@Example.COM "),
+            Some("ada@example.com".to_string())
+        );
+        assert_eq!(
+            normalize_email("ada+tag@example.com").as_deref(),
+            Some("ada+tag@example.com")
+        );
+        assert!(normalize_email("not-an-email").is_none());
+        assert!(normalize_email("a@b").is_none());
+        assert!(normalize_email("a@b.c@d.com").is_none());
+        assert!(normalize_email(" ada @example.com").is_none());
+    }
+
+    #[test]
+    fn password_length_is_bounded() {
+        assert!(!acceptable_password("short"));
+        assert!(acceptable_password("long-enough"));
+        assert!(!acceptable_password(&"x".repeat(PASSWORD_MAX_CHARS + 1)));
+    }
+
+    #[test]
+    fn password_hash_verifies_and_rejects() {
+        let password = "correct-horse";
+        let first = hash_password(password).unwrap();
+        let second = hash_password(password).unwrap();
+        assert_ne!(first, second);
+        assert!(verify_password(password, &first).unwrap());
+        assert!(!verify_password("wrong-password", &first).unwrap());
+        assert!(verify_password(password, "not-a-hash").is_err());
+        assert!(!first.contains(password));
     }
 
     #[test]

@@ -1318,6 +1318,7 @@ mod tests {
                 inner: Mutex::new(FakeInner {
                     user: User {
                         id: user_id,
+                        email: Some("ada@example.test".into()),
                         display_name: "Ada".into(),
                         locale: locale.into(),
                     },

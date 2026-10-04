@@ -46,16 +46,25 @@ pub struct AppState {
 }
 
 /// New account. `locale` defaults to `pl`. `en` selects English replies.
-#[derive(Clone, Debug, serde::Deserialize, ToSchema)]
-pub struct CreateUser {
+#[derive(Clone, serde::Deserialize, ToSchema)]
+pub struct Register {
+    pub email: String,
+    pub password: String,
     pub display_name: String,
     pub locale: Option<String>,
 }
 
-/// Access and refresh tokens for a new account.
+#[derive(Clone, serde::Deserialize, ToSchema)]
+pub struct Login {
+    pub email: String,
+    pub password: String,
+}
+
+/// Access and refresh tokens for an account.
 #[derive(Clone, Debug, Serialize, ToSchema)]
 pub struct Session {
     pub id: Uuid,
+    pub email: String,
     pub display_name: String,
     pub access_token: String,
     pub refresh_token: String,
@@ -79,6 +88,7 @@ pub struct Refreshed {
 #[derive(Clone, Debug, Serialize, ToSchema)]
 pub struct Me {
     pub id: Uuid,
+    pub email: Option<String>,
     pub display_name: String,
     pub locale: String,
     pub age_band: Option<String>,
@@ -225,7 +235,8 @@ fn internal() -> ApiError {
 
 pub fn router(state: AppState) -> Router {
     let api = Router::new()
-        .route("/v1/users", post(create_user))
+        .route("/v1/auth/register", post(register))
+        .route("/v1/auth/login", post(login))
         .route("/v1/auth/refresh", post(refresh_session))
         .route("/v1/stream", get(user_stream))
         .route("/v1/me", get(get_me).patch(patch_me))
@@ -261,7 +272,7 @@ impl Modify for BearerAuth {
                     .scheme(utoipa::openapi::security::HttpAuthScheme::Bearer)
                     .bearer_format("JWT")
                     .description(Some(
-                        "Access token from POST /v1/users or POST /v1/auth/refresh.",
+                        "Access token from POST /v1/auth/register, POST /v1/auth/login, or POST /v1/auth/refresh.",
                     ))
                     .build(),
             ),
@@ -274,18 +285,19 @@ impl Modify for BearerAuth {
     info(
         title = "Styrta",
         version = "0.1.0",
-        description = "Nearby meetups. Swagger UI is served at /docs. Send `Authorization: Bearer <access_token>` on every route except POST /v1/users and POST /v1/auth/refresh."
+        description = "Nearby meetups. Swagger UI is served at /docs. Send `Authorization: Bearer <access_token>` on every route except POST /v1/auth/register, POST /v1/auth/login, and POST /v1/auth/refresh."
     ),
     modifiers(&BearerAuth),
     tags(
-        (name = "account", description = "Sign-up and token refresh"),
+        (name = "account", description = "Register, log in, and token refresh"),
         (name = "profile", description = "The signed-in person"),
         (name = "events", description = "Public meetups"),
         (name = "chat", description = "Turns, history, and speech"),
         (name = "stream", description = "Server-sent events for one user"),
     ),
     paths(
-        create_user,
+        register,
+        login,
         refresh_session,
         user_stream,
         get_me,
@@ -329,7 +341,11 @@ pub fn harness_services(state: &AppState) -> Services<'_> {
 }
 
 fn is_public(method: &Method, path: &str) -> bool {
-    method == Method::POST && (path == "/v1/users" || path == "/v1/auth/refresh")
+    method == Method::POST
+        && matches!(
+            path,
+            "/v1/auth/register" | "/v1/auth/login" | "/v1/auth/refresh"
+        )
 }
 
 fn authenticate(secret: &str, authorization: Option<&str>) -> Result<Claims, ApiError> {
@@ -373,37 +389,114 @@ fn issue_pair(secret: &str, user_id: Uuid) -> Result<(auth::Issued, auth::Issued
 
 #[utoipa::path(
     post,
-    path = "/v1/users",
+    path = "/v1/auth/register",
     tag = "account",
-    request_body = CreateUser,
+    request_body = Register,
     responses(
         (status = 200, body = Session),
-        (status = 400, description = "Empty display name", body = ErrorBody),
+        (status = 400, description = "Email, password, or display name rejected", body = ErrorBody),
+        (status = 409, description = "Email already registered", body = ErrorBody),
     )
 )]
-async fn create_user(
+async fn register(
     State(state): State<AppState>,
-    Json(body): Json<CreateUser>,
+    Json(body): Json<Register>,
 ) -> Result<Json<Session>, ApiError> {
+    let email = auth::normalize_email(&body.email).ok_or_else(|| bad("email"))?;
+    if !auth::acceptable_password(&body.password) {
+        return Err(bad("password"));
+    }
     let display_name = body.display_name.trim();
     if display_name.is_empty() {
         return Err(bad("display name"));
     }
-    let locale = locale_of(body.locale.as_deref());
+    let password_hash = auth::hash_password(&body.password).map_err(|err| {
+        tracing::error!(error = %err, "hash password");
+        internal()
+    })?;
     let user = state
         .store
-        .create_user(display_name, &locale)
+        .create_user(&appdb::NewUser {
+            email,
+            password_hash,
+            display_name: display_name.to_string(),
+            locale: locale_of(body.locale.as_deref()),
+        })
         .await
         .map_err(map_store)?;
     let (access, refresh) = issue_pair(&state.config.jwt_secret, user.id)?;
-    Ok(Json(Session {
+    Ok(Json(issued_session(user, access, refresh)?))
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/auth/login",
+    tag = "account",
+    request_body = Login,
+    responses(
+        (status = 200, body = Session),
+        (status = 401, description = "Email or password rejected", body = ErrorBody),
+    )
+)]
+async fn login(
+    State(state): State<AppState>,
+    Json(body): Json<Login>,
+) -> Result<Json<Session>, ApiError> {
+    if body.password.chars().count() > auth::PASSWORD_MAX_CHARS {
+        return Err(unauthorized());
+    }
+    let found = match auth::normalize_email(&body.email) {
+        Some(email) => state.store.user_by_email(&email).await.map_err(map_store)?,
+        None => None,
+    };
+    let matches = match &found {
+        Some(row) => password_matches(&body.password, &row.password_hash),
+        None => password_matches(&body.password, dummy_password_hash()),
+    };
+    let Some(row) = found.filter(|_| matches) else {
+        return Err(unauthorized());
+    };
+    let (access, refresh) = issue_pair(&state.config.jwt_secret, row.user.id)?;
+    Ok(Json(issued_session(row.user, access, refresh)?))
+}
+
+fn issued_session(
+    user: appdb::User,
+    access: auth::Issued,
+    refresh: auth::Issued,
+) -> Result<Session, ApiError> {
+    let email = user.email.ok_or_else(|| {
+        tracing::error!(user_id = %user.id, "account missing email");
+        internal()
+    })?;
+    Ok(Session {
         id: user.id,
+        email,
         display_name: user.display_name,
         access_token: access.token,
         refresh_token: refresh.token,
         access_expires_at: access.expires_at,
         refresh_expires_at: refresh.expires_at,
-    }))
+    })
+}
+
+fn password_matches(password: &str, hash: &str) -> bool {
+    auth::acceptable_password(password)
+        && match auth::verify_password(password, hash) {
+            Ok(ok) => ok,
+            Err(err) => {
+                tracing::error!(error = %err, "verify password");
+                false
+            }
+        }
+}
+
+fn dummy_password_hash() -> &'static str {
+    static HASH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HASH.get_or_init(|| {
+        auth::hash_password("dummy-password-not-a-secret").expect("dummy password hash")
+    })
+    .as_str()
 }
 
 #[utoipa::path(
@@ -426,6 +519,11 @@ async fn refresh_session(
         auth::TokenKind::Refresh,
     )
     .map_err(|_| unauthorized())?;
+    match state.store.user(claims.sub).await {
+        Ok(_) => {}
+        Err(appdb::Error::NotFound) => return Err(unauthorized()),
+        Err(err) => return Err(map_store(err)),
+    }
     let (access, refresh) = issue_pair(&state.config.jwt_secret, claims.sub)?;
     Ok(Json(Refreshed {
         access_token: access.token,
@@ -619,6 +717,7 @@ async fn load_me(state: &AppState, user_id: Uuid) -> Result<Me, ApiError> {
 fn me_from(user: appdb::User, profile: appdb::Profile) -> Me {
     Me {
         id: user.id,
+        email: user.email,
         display_name: user.display_name,
         locale: user.locale,
         age_band: profile.age_band,
@@ -1362,6 +1461,12 @@ fn audio_type(path: &std::path::Path, bytes: &[u8]) -> &'static str {
 }
 
 fn map_store(err: appdb::Error) -> ApiError {
+    if let appdb::Error::Taken = err {
+        return ApiError {
+            status: StatusCode::CONFLICT,
+            message: "email taken",
+        };
+    }
     let status = store_status(&format!("{err:?} {err}"));
     if status == StatusCode::INTERNAL_SERVER_ERROR {
         tracing::error!(error = %err, "store");
@@ -1469,7 +1574,8 @@ mod tests {
     fn openapi_lists_every_http_route() {
         let spec = ApiDoc::openapi();
         for path in [
-            "/v1/users",
+            "/v1/auth/register",
+            "/v1/auth/login",
             "/v1/auth/refresh",
             "/v1/stream",
             "/v1/me",
@@ -1530,11 +1636,14 @@ mod tests {
     }
 
     #[test]
-    fn only_create_user_and_refresh_are_public() {
-        assert!(is_public(&Method::POST, "/v1/users"));
+    fn only_register_login_and_refresh_are_public() {
+        assert!(is_public(&Method::POST, "/v1/auth/register"));
+        assert!(is_public(&Method::POST, "/v1/auth/login"));
         assert!(is_public(&Method::POST, "/v1/auth/refresh"));
-        assert!(!is_public(&Method::GET, "/v1/users"));
+        assert!(!is_public(&Method::GET, "/v1/auth/register"));
+        assert!(!is_public(&Method::GET, "/v1/auth/login"));
         assert!(!is_public(&Method::GET, "/v1/auth/refresh"));
+        assert!(!is_public(&Method::POST, "/v1/users"));
         for path in [
             "/v1/stream",
             "/v1/me",
@@ -1573,6 +1682,9 @@ mod tests {
             map_store(appdb::Error::Invalid).status,
             StatusCode::BAD_REQUEST
         );
+        let taken = map_store(appdb::Error::Taken);
+        assert_eq!(taken.status, StatusCode::CONFLICT);
+        assert_eq!(taken.message, "email taken");
     }
 
     #[test]
@@ -1863,15 +1975,26 @@ mod tests {
     }
 
     async fn create_session(base: &str, name: &str) -> serde_json::Value {
+        let slug: String = name
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .flat_map(|ch| ch.to_lowercase())
+            .collect();
+        let email = format!("{slug}-{}@example.test", Uuid::now_v7());
         let response = http()
-            .post(format!("{base}/v1/users"))
-            .json(&serde_json::json!({ "display_name": name }))
+            .post(format!("{base}/v1/auth/register"))
+            .json(&serde_json::json!({
+                "email": email,
+                "password": "test-password",
+                "display_name": name
+            }))
             .send()
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let body: serde_json::Value = response.json().await.unwrap();
         assert!(body["access_token"].as_str().unwrap().starts_with("ey"));
+        assert_eq!(body["email"], email);
         assert_eq!(body["display_name"], name);
         body
     }
@@ -1914,6 +2037,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(me["locale"], "pl");
         assert_eq!(me["display_name"], "Ada");
+        assert_eq!(me["email"], session["email"]);
         assert_eq!(me["likes"], serde_json::json!([]));
 
         let patched = http()
@@ -1949,6 +2073,133 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(me["display_name"], "Ada Lovelace");
+    }
+
+    async fn post_json(
+        base: &str,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let response = http()
+            .post(format!("{base}{path}"))
+            .json(body)
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response.json().await.unwrap_or(serde_json::json!({}));
+        (status, body)
+    }
+
+    #[tokio::test]
+    async fn register_and_login_use_email_and_password() {
+        let _guard = db_lock().lock().await;
+        let app = running().await;
+        let email = format!("ada-{}@example.test", Uuid::now_v7());
+        let password = "correct-horse";
+        let (status, registered) = post_json(
+            &app.base,
+            "/v1/auth/register",
+            &serde_json::json!({
+                "email": format!("  {email} "),
+                "password": password,
+                "display_name": "Ada"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(registered["email"], email);
+
+        let (status, duplicate) = post_json(
+            &app.base,
+            "/v1/auth/register",
+            &serde_json::json!({
+                "email": email.to_uppercase(),
+                "password": password,
+                "display_name": "Ada"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(duplicate["error"], "email taken");
+
+        let (status, _) = post_json(
+            &app.base,
+            "/v1/auth/register",
+            &serde_json::json!({
+                "email": format!("short-{}@example.test", Uuid::now_v7()),
+                "password": "short",
+                "display_name": "Ada"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let (status, _) = post_json(
+            &app.base,
+            "/v1/auth/register",
+            &serde_json::json!({
+                "email": "not-an-email",
+                "password": password,
+                "display_name": "Ada"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let (status, logged) = post_json(
+            &app.base,
+            "/v1/auth/login",
+            &serde_json::json!({
+                "email": email.to_uppercase(),
+                "password": password
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(logged["id"], registered["id"]);
+        assert_eq!(logged["email"], email);
+        assert_ne!(logged["access_token"], registered["access_token"]);
+
+        let (wrong_status, wrong) = post_json(
+            &app.base,
+            "/v1/auth/login",
+            &serde_json::json!({
+                "email": email,
+                "password": "wrong-password"
+            }),
+        )
+        .await;
+        let (missing_status, missing) = post_json(
+            &app.base,
+            "/v1/auth/login",
+            &serde_json::json!({
+                "email": format!("missing-{}@example.test", Uuid::now_v7()),
+                "password": password
+            }),
+        )
+        .await;
+        assert_eq!(wrong_status, StatusCode::UNAUTHORIZED);
+        assert_eq!(missing_status, StatusCode::UNAUTHORIZED);
+        assert_eq!(wrong["error"], "unauthorized");
+        assert_eq!(missing["error"], "unauthorized");
+
+        let (status, _) = post_json(
+            &app.base,
+            "/v1/users",
+            &serde_json::json!({ "display_name": "Ada" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let forged = auth::issue_refresh(SECRET, Uuid::now_v7()).unwrap();
+        let (status, _) = post_json(
+            &app.base,
+            "/v1/auth/refresh",
+            &serde_json::json!({ "refresh_token": forged.token }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
