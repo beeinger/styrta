@@ -18,10 +18,10 @@ use crate::llm::{
     AssistantMessage, CompletionRequest, Message, Model, StreamItem, ToolCall, ToolChoice,
     ToolDefinition,
 };
+use crate::places::Geocoder;
 use crate::prompt;
 use crate::rank::{self, Candidate, Person};
 use crate::speech::Speech;
-use crate::places::Geocoder;
 use crate::sse::{
     AudioReady, EventDraft, Kind, ReplyDelta, ReplyDone, ToolFinished, ToolStarted,
     TranscriptReady, TurnFailed, TurnRef,
@@ -105,6 +105,12 @@ pub trait HarnessStore: Send + Sync {
         place: &crate::appdb::PendingPlace,
     ) -> Result<(), StoreError>;
     async fn clear_pending_place(&self, user_id: Uuid) -> Result<(), StoreError>;
+    async fn set_pending_event(
+        &self,
+        user_id: Uuid,
+        event: &crate::appdb::PendingEvent,
+    ) -> Result<(), StoreError>;
+    async fn clear_pending_event(&self, user_id: Uuid) -> Result<(), StoreError>;
     async fn recent_turns(
         &self,
         user_id: Uuid,
@@ -223,6 +229,22 @@ impl HarnessStore for Store {
 
     async fn clear_pending_place(&self, user_id: Uuid) -> Result<(), StoreError> {
         Store::clear_pending_place(self, user_id)
+            .await
+            .map_err(StoreError::new)
+    }
+
+    async fn set_pending_event(
+        &self,
+        user_id: Uuid,
+        event: &crate::appdb::PendingEvent,
+    ) -> Result<(), StoreError> {
+        Store::set_pending_event(self, user_id, event)
+            .await
+            .map_err(StoreError::new)
+    }
+
+    async fn clear_pending_event(&self, user_id: Uuid) -> Result<(), StoreError> {
+        Store::clear_pending_event(self, user_id)
             .await
             .map_err(StoreError::new)
     }
@@ -733,6 +755,7 @@ async fn fresh<S: HarnessStore>(
         &memories,
         conversation.summary.as_deref(),
         conversation.pending_place.as_ref(),
+        conversation.pending_event.as_ref(),
         &recent,
         &user_text,
         Utc::now(),
@@ -1052,12 +1075,12 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
+    use crate::appdb::PendingPlace;
     use crate::appdb::{
         AttendanceStatus, ChatRole, Durability, EventStatus, PlaceKind, TurnStatus,
     };
     use crate::config::Config;
     use crate::embed::{Embedder, Input};
-    use crate::appdb::PendingPlace;
     use crate::knowledge::Hit;
     use crate::llm::{Model, ModelStream, ToolCall};
     use crate::places::{Geocoder, PlaceHit, PlaceSearch};
@@ -1306,6 +1329,7 @@ mod tests {
         knowledge: Vec<(String, Vec<Hit>)>,
         next_event_id: Option<Uuid>,
         summaries: Vec<(String, Uuid)>,
+        candidates: Vec<Candidate>,
     }
 
     struct FakeStore {
@@ -1344,7 +1368,9 @@ mod tests {
                         summary: None,
                         summary_through: None,
                         pending_place: None,
+                        pending_event: None,
                     },
+                    candidates: Vec::new(),
                     remember_writes: 0,
                     profile_writes: 0,
                     create_writes: 0,
@@ -1447,6 +1473,10 @@ mod tests {
             self.lock()
                 .events
                 .push(blank_event(id, user_id, capacity, signed));
+        }
+
+        fn seed_candidate(&self, candidate: Candidate) {
+            self.lock().candidates.push(candidate);
         }
 
         fn reopen(&self) {
@@ -1556,6 +1586,20 @@ mod tests {
 
         async fn clear_pending_place(&self, _user_id: Uuid) -> Result<(), StoreError> {
             self.lock().conversation.pending_place = None;
+            Ok(())
+        }
+
+        async fn set_pending_event(
+            &self,
+            _user_id: Uuid,
+            event: &crate::appdb::PendingEvent,
+        ) -> Result<(), StoreError> {
+            self.lock().conversation.pending_event = Some(event.clone());
+            Ok(())
+        }
+
+        async fn clear_pending_event(&self, _user_id: Uuid) -> Result<(), StoreError> {
+            self.lock().conversation.pending_event = None;
             Ok(())
         }
 
@@ -1827,9 +1871,14 @@ mod tests {
                 place_kind: event.place_kind,
                 latitude: event.latitude,
                 longitude: event.longitude,
-                signed_count: 0,
+                signed_count: 1,
             };
             inner.events.push(saved.clone());
+            inner.attendances.push(Attendance {
+                event_id: id,
+                user_id: host_id,
+                status: AttendanceStatus::Going,
+            });
             Ok(saved)
         }
 
@@ -1843,9 +1892,15 @@ mod tests {
             let Some(event) = inner.events.iter().find(|event| event.id == event_id) else {
                 return Err(StoreError::new("event not found"));
             };
-            if event
-                .capacity
-                .is_some_and(|cap| event.signed_count >= i64::from(cap))
+            let already_going = inner.attendances.iter().any(|attendance| {
+                attendance.event_id == event_id
+                    && attendance.user_id == user_id
+                    && attendance.status == AttendanceStatus::Going
+            });
+            if !already_going
+                && event
+                    .capacity
+                    .is_some_and(|cap| event.signed_count >= i64::from(cap))
             {
                 return Err(StoreError::new("event is full"));
             }
@@ -1923,7 +1978,7 @@ mod tests {
             _bounds: Option<rank::BBox>,
             _now: DateTime<Utc>,
         ) -> Result<Vec<Candidate>, StoreError> {
-            Ok(Vec::new())
+            Ok(self.lock().candidates.clone())
         }
 
         async fn my_events(
@@ -2173,6 +2228,138 @@ mod tests {
             .unwrap()
             .pending_place
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn search_events_remembers_the_meetup_it_offers() {
+        let world = World::new("pl", "padel");
+        let event_id = Uuid::from_u128(7);
+        world.store.seed_candidate(nearby_candidate(event_id));
+        world.model.push_tools(vec![tool_call(
+            "s",
+            "search_events",
+            r#"{"lat":50.0683,"lng":19.9917}"#,
+        )]);
+        world.model.push_text("Chcesz dołączyć?");
+        world.run().await.expect("turn");
+        let pending = world
+            .store
+            .conversation(world.user_id)
+            .await
+            .unwrap()
+            .pending_event
+            .unwrap();
+        assert_eq!(pending.id, event_id);
+        assert_eq!(pending.title, "Padel");
+        assert_eq!(pending.place_name, "Lądowisko");
+    }
+
+    #[tokio::test]
+    async fn an_empty_search_drops_the_previous_offer() {
+        let world = World::new("pl", "coś innego");
+        world
+            .store
+            .set_pending_event(
+                world.user_id,
+                &crate::appdb::PendingEvent {
+                    id: Uuid::from_u128(7),
+                    title: "Padel".into(),
+                    place_name: "Lądowisko".into(),
+                },
+            )
+            .await
+            .unwrap();
+        world.model.push_tools(vec![tool_call(
+            "s",
+            "search_events",
+            r#"{"lat":50.0683,"lng":19.9917}"#,
+        )]);
+        world.model.push_text("Nic nie pasuje.");
+        world.run().await.expect("turn");
+        assert!(world
+            .store
+            .conversation(world.user_id)
+            .await
+            .unwrap()
+            .pending_event
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn join_uses_the_offered_event_when_the_id_is_invented() {
+        let world = World::new("pl", "tak");
+        let event_id = Uuid::from_u128(7);
+        world.store.seed_event(event_id, None, 1);
+        world
+            .store
+            .set_pending_event(
+                world.user_id,
+                &crate::appdb::PendingEvent {
+                    id: event_id,
+                    title: "Padel".into(),
+                    place_name: "Lądowisko".into(),
+                },
+            )
+            .await
+            .unwrap();
+        world.model.push_tools(vec![tool_call(
+            "j",
+            "join_event",
+            r#"{"event_id":"evt_padle_1"}"#,
+        )]);
+        world.model.push_text("Zapisane.");
+        world.run().await.expect("turn");
+        assert_eq!(world.store.join_calls(), vec![event_id]);
+        assert!(world
+            .store
+            .conversation(world.user_id)
+            .await
+            .unwrap()
+            .pending_event
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn join_without_an_offer_does_not_invent_an_event() {
+        let world = World::new("en", "yes");
+        world.model.push_tools(vec![tool_call(
+            "j",
+            "join_event",
+            r#"{"event_id":"evt_padle_1"}"#,
+        )]);
+        world.model.push_text("That did not work.");
+        world.run().await.expect("turn");
+        assert!(world.store.join_calls().is_empty());
+        let bodies = tool_bodies(&world.model.stream_messages()[1]);
+        assert!(
+            bodies[0]["error"]
+                .as_str()
+                .is_some_and(|text| text.contains("no event was offered")),
+            "{bodies:?}"
+        );
+    }
+
+    fn nearby_candidate(id: Uuid) -> Candidate {
+        Candidate {
+            id,
+            title: "Padel".into(),
+            emoji: "🎾".into(),
+            description: String::new(),
+            activity_tags: vec!["padel".into()],
+            women_only: false,
+            starts_at: Utc::now() + chrono::Duration::hours(5),
+            capacity: None,
+            promoted: false,
+            status: EventStatus::Scheduled,
+            place_name: "Lądowisko".into(),
+            place_kind: PlaceKind::Park,
+            latitude: 50.0683,
+            longitude: 19.9917,
+            host_name: "Ada".into(),
+            signed_count: 1,
+            embedding: None,
+            attendees: Vec::new(),
+        }
     }
 
     #[tokio::test]

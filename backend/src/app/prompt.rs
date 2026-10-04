@@ -1,6 +1,8 @@
 use chrono::{DateTime, Utc};
 
-use crate::appdb::{ChatMessage, ChatRole, Durability, Memory, PendingPlace, Profile};
+use crate::appdb::{
+    ChatMessage, ChatRole, Durability, Memory, PendingEvent, PendingPlace, Profile,
+};
 use crate::harness::RECENT_USER_TURNS;
 use crate::llm::Message;
 
@@ -14,6 +16,7 @@ pub fn messages(
     memories: &[Memory],
     summary: Option<&str>,
     pending: Option<&PendingPlace>,
+    pending_event: Option<&PendingEvent>,
     recent: &[ChatMessage],
     user_text: &str,
     now: DateTime<Utc>,
@@ -23,7 +26,7 @@ pub fn messages(
             content: system_prompt(locale).to_string(),
         },
         Message::System {
-            content: context_block(profile, memories, pending, now),
+            content: context_block(profile, memories, pending, pending_event, now),
         },
     ];
     if let Some(summary) = summary.map(str::trim).filter(|text| !text.is_empty()) {
@@ -67,7 +70,7 @@ They can talk and leave with nothing posted. When they tell you a fact about the
 
 For a service or an innovation, call search_knowledge. Cite only a page_url it returned: the title in a sentence, then that address once. If search_knowledge returns nothing, say the library has nothing.
 
-For somewhere to go, call search_events. Offer one event unless they asked for a list. Say what it is, the public place, and how many people are going. Then ask if they want to go. join_event only in a later message, after they said yes to that event. If events is empty, say nothing fits and ask if they want to post their own. Do not create it in that turn.
+For somewhere to go, call search_events. Offer one event unless they asked for a list. Say what it is, the public place, and how many people are going. Then ask if they want to go. join_event only in a later message, after they said yes to the pending event. Copy its event_id from the profile message. Do not invent an id. If events is empty, say nothing fits and ask if they want to post their own. Do not create it in that turn.
 
 If they agree to post one, ask what it is and when, if they have not said. Ask which public place: a cafe, a park, a hall, or a square, never a home. Call search_place with their words. The map shows the first place. Ask once if it is that name at that street in that city, as in: is it TAURON Arena Kraków at Stanisława Lema 7 in Kraków? create_event only in a later message, after they say yes to that place. Copy lat, lon, and kind from the pending place. If places is empty, say you could not find it. If rejected_private is true, say it has to be a public place.
 
@@ -90,7 +93,7 @@ Może porozmawiać i wyjść bez ogłoszonego spotkania. Gdy mówi coś o sobie,
 
 Przy usłudze albo innowacji wywołaj search_knowledge i cytuj tylko page_url z tego wyniku: tytuł w zdaniu, potem ten adres raz. Gdy search_knowledge nic nie zwróci, powiedz, że w bibliotece nic nie ma.
 
-Gdy szuka dokąd iść, wywołaj search_events. Zaproponuj jedno spotkanie, chyba że prosi o listę. Powiedz, co to jest, miejsce publiczne i ile osób już idzie. Potem zapytaj, czy chce iść. join_event dopiero w kolejnej wiadomości, gdy zgodzi się na to spotkanie. Gdy events jest puste, powiedz, że nic nie pasuje, i zapytaj, czy chce ogłosić własne. Nie twórz go w tej turze.
+Gdy szuka dokąd iść, wywołaj search_events. Zaproponuj jedno spotkanie, chyba że prosi o listę. Powiedz, co to jest, miejsce publiczne i ile osób już idzie. Potem zapytaj, czy chce iść. join_event dopiero w kolejnej wiadomości, gdy zgodzi się na pending event. Skopiuj jego event_id z wiadomości z profilem. Nie wymyślaj identyfikatora. Gdy events jest puste, powiedz, że nic nie pasuje, i zapytaj, czy chce ogłosić własne. Nie twórz go w tej turze.
 
 Gdy zgodzi się ogłosić, zapytaj co to jest i kiedy, jeśli jeszcze nie powiedział. Zapytaj o miejsce publiczne: kawiarnia, park, sala albo plac, nigdy dom. Wywołaj search_place z jego słowami. Mapa pokazuje pierwsze miejsce. Zapytaj raz, czy to ta nazwa przy tej ulicy w tym mieście, na przykład: czy to TAURON Arena Kraków przy Stanisława Lema 7 w Krakowie? create_event dopiero w kolejnej wiadomości, gdy potwierdzi to miejsce. Skopiuj lat, lon i kind z pending place. Gdy places jest puste, powiedz, że nie znalazłeś. Gdy rejected_private jest true, powiedz, że to musi być miejsce publiczne.
 
@@ -106,6 +109,7 @@ fn context_block(
     profile: &Profile,
     memories: &[Memory],
     pending: Option<&PendingPlace>,
+    pending_event: Option<&PendingEvent>,
     now: DateTime<Utc>,
 ) -> String {
     let mut text = format!(
@@ -163,6 +167,12 @@ Profile:\n",
             place.kind.as_str(),
             place.lat,
             place.lon
+        ));
+    }
+    if let Some(event) = pending_event {
+        text.push_str(&format!(
+            "Pending event:\nevent_id: {}\ntitle: {}\nplace_name: {}\njoin_event only after they agree to this meetup. Pass this event_id. Do not invent an id.\n",
+            event.id, event.title, event.place_name
         ));
     }
     text
@@ -245,7 +255,17 @@ mod tests {
     #[test]
     fn polish_when_locale_is_blank_or_pl() {
         for locale in ["", "pl", "PL", "  "] {
-            let messages = messages(locale, &profile(), &[], None, None, &[], "cześć", now());
+            let messages = messages(
+                locale,
+                &profile(),
+                &[],
+                None,
+                None,
+                None,
+                &[],
+                "cześć",
+                now(),
+            );
             let prompt = system(&messages, 0);
             assert!(
                 prompt.contains("w bibliotece nic nie ma"),
@@ -267,7 +287,7 @@ mod tests {
 
     #[test]
     fn english_when_locale_is_en() {
-        let messages = messages("en", &profile(), &[], None, None, &[], "hi", now());
+        let messages = messages("en", &profile(), &[], None, None, None, &[], "hi", now());
         let prompt = system(&messages, 0);
         assert!(prompt.contains("library has nothing"), "{prompt}");
         assert!(prompt.contains("only after they asked"), "{prompt}");
@@ -317,6 +337,11 @@ mod tests {
                 lon: 19.9915490,
                 kind: crate::rank::PlaceKind::Hall,
             }),
+            Some(&PendingEvent {
+                id: Uuid::from_u128(7),
+                title: "Padel".into(),
+                place_name: "Lądowisko".into(),
+            }),
             &recent,
             "new-text",
             now(),
@@ -332,6 +357,11 @@ mod tests {
         assert!(context.contains("age_band: 30s"), "{context}");
         assert!(context.contains("tennis-memory"), "{context}");
         assert!(context.contains("Pending place:"), "{context}");
+        assert!(context.contains("Pending event:"), "{context}");
+        assert!(
+            context.contains("00000000-0000-0000-0000-000000000007"),
+            "{context}"
+        );
         assert!(context.contains("Stanisława Lema 7"), "{context}");
         assert!(context.contains("50.0677202"), "{context}");
         assert!(context.contains("quoted-line"), "{context}");

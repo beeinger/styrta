@@ -6,8 +6,8 @@ use unicode_segmentation::UnicodeSegmentation;
 use uuid::Uuid;
 
 use crate::appdb::{
-    Attendance, Event, ForgetResult, Memory, NewEvent, NewMemory, PendingPlace, Profile,
-    ProfilePatch,
+    Attendance, Event, ForgetResult, Memory, NewEvent, NewMemory, PendingEvent, PendingPlace,
+    Profile, ProfilePatch,
 };
 use crate::embed::{Embedder, Input};
 use crate::harness::{HarnessStore, StoreError};
@@ -296,7 +296,7 @@ pub fn specs() -> Result<Vec<ToolDefinition>, Error> {
         ),
         spec(
             ToolName::SearchEvents,
-            "Call this when they want somewhere to go. lat and lng are required. Use coordinates they gave or from an earlier tool result. If you have none, use lat 50.0683 and lng 19.9917, TAURON Arena at ul. Stanisława Lema 7, and say you looked around the arena. query is optional. Do not add an activity the filters dropped. If capacity is set and signed_count is at least capacity, it is full: do not offer it, and join will fail. Speak one event unless they asked for a list: the title, the public place_name, and signed_count as how many people are going. Then ask if they want to go. Do not call join_event until a later message where they said yes. If promoted is true, say it is promoted. Do not speak score, distance_m, host_name, or coordinates. An empty events list means nothing in range passed. Say nothing fits and ask if they want to post their own. Do not call create_event in that turn.",
+            "Call this when they want somewhere to go. lat and lng are required. Use coordinates they gave or from an earlier tool result. If you have none, use lat 50.0683 and lng 19.9917, TAURON Arena at ul. Stanisława Lema 7, and say you looked around the arena. query is optional. Do not add an activity the filters dropped. If capacity is set and signed_count is at least capacity, it is full: do not offer it, and join will fail. Speak one event unless they asked for a list: the title, the public place_name, and signed_count as how many people are going. Then ask if they want to go. The first event that is not full is saved as the pending event. Do not call join_event until a later message where they said yes. If promoted is true, say it is promoted. Do not speak score, distance_m, host_name, or coordinates. An empty events list means nothing in range passed. Say nothing fits and ask if they want to post their own. Do not call create_event in that turn.",
             schema(
                 json!({
                     "query": {"type": "string", "description": "Optional. The activity in a few words, such as walk or cafe."},
@@ -320,7 +320,7 @@ pub fn specs() -> Result<Vec<ToolDefinition>, Error> {
         ),
         spec(
             ToolName::ListMyEvents,
-            "Call this when they ask which meetups they are going to. Pass no arguments. It returns events where their attendance is going, not an event they only host. The status field is the event status, usually scheduled, not the attendance. If they just created one, speak from that create_event result. Speak the title, the public place_name, and signed_count as how many people are going.",
+            "Call this when they ask which meetups they are going to. Pass no arguments. It returns events where their attendance is going. Creating a meetup marks the host as going, so that meetup is included. The status field is the event status, usually scheduled, not the attendance. If they just created one, speak from that create_event result. Speak the title, the public place_name, and signed_count as how many people are going.",
             schema(json!({}), &[]),
         ),
         spec(
@@ -335,7 +335,7 @@ pub fn specs() -> Result<Vec<ToolDefinition>, Error> {
         ),
         spec(
             ToolName::CreateEvent,
-            "Call this only in a later message, after they said yes to the pending place from search_place. The longitude field is lon, not lng. Copy that place's lat into lat and its lon into lon. The store keeps the geocoded name, kind, and coordinates when they are close. Do not invent coordinates, and do not reuse the arena fallback unless search_place returned the arena. starts_at is RFC3339 UTC. Europe/Warsaw is UTC+2 from 01:00 UTC on the last Sunday of March until 01:00 UTC on the last Sunday of October, otherwise UTC+1. place_name must be public. The store rejects kind not_public only, so do not send a home under a public kind. emoji is one grapheme and is not spoken. women_only true only when they asked for a women-only meetup. activity_tags use the same English words as set_profile. Omit capacity and description unless they gave them. Hosting does not mark them as going. If the result has error, the meetup was not created.",
+            "Call this only in a later message, after they said yes to the pending place from search_place. The longitude field is lon, not lng. Copy that place's lat into lat and its lon into lon. The store keeps the geocoded name, kind, and coordinates when they are close. Do not invent coordinates, and do not reuse the arena fallback unless search_place returned the arena. starts_at is RFC3339 UTC. Europe/Warsaw is UTC+2 from 01:00 UTC on the last Sunday of March until 01:00 UTC on the last Sunday of October, otherwise UTC+1. place_name must be public. The store rejects kind not_public only, so do not send a home under a public kind. emoji is one grapheme and is not spoken. women_only true only when they asked for a women-only meetup. activity_tags use the same English words as set_profile. Omit capacity and description unless they gave them. The host is marked going, so signed_count starts at 1. Capacity, when set, must be at least 1. If the result has error, the meetup was not created.",
             schema(
                 json!({
                     "title": {"type": "string", "description": "Short name of the meetup."},
@@ -363,9 +363,9 @@ pub fn specs() -> Result<Vec<ToolDefinition>, Error> {
         ),
         spec(
             ToolName::JoinEvent,
-            "Call this only in a later message, after they said yes to one event you already offered. event_id must be an id from search_events or list_my_events in this conversation. Do not call it in the same turn as search_events. Success is status going. If the result has error, including event is full, the join did not happen. Say that in a sentence.",
+            "Call this only in a later message, after they said yes to the pending event from search_events. Pass that event_id. Do not invent an id. The store joins the pending event. Do not call it in the same turn as search_events. Success is status going. If the result has error, including event is full or no event was offered, the join did not happen. Say that in a sentence.",
             schema(
-                json!({"event_id": {"type": "string", "description": "id from search_events or list_my_events."}}),
+                json!({"event_id": {"type": "string", "description": "event_id of the pending event. Do not invent one."}}),
                 &["event_id"],
             ),
         ),
@@ -459,6 +459,9 @@ pub fn event_args(call: &ToolCall) -> Result<NewEvent, Error> {
         return Err(Error::BadArguments(
             "emoji must be one grapheme".to_string(),
         ));
+    }
+    if matches!(args.capacity, Some(capacity) if capacity < 1) {
+        return Err(Error::BadArguments("capacity".to_string()));
     }
     Ok(NewEvent {
         title: args.title,
@@ -565,6 +568,18 @@ async fn search_events<S: HarnessStore>(
         events: &candidates,
     })
     .map_err(|err| Error::Failed(err.to_string()))?;
+    match pending_offer(&ranked) {
+        Some(offer) => ctx
+            .store
+            .set_pending_event(ctx.user_id, &offer)
+            .await
+            .map_err(failed)?,
+        None => ctx
+            .store
+            .clear_pending_event(ctx.user_id)
+            .await
+            .map_err(failed)?,
+    }
     let count = ranked.len();
     Ok(ToolResult::hits(
         json!({
@@ -732,16 +747,48 @@ async fn join_event<S: HarnessStore>(
     ctx: &ToolContext<'_, S>,
     call: &ToolCall,
 ) -> Result<ToolResult, Error> {
-    let args: EventIdArgs = parse(&call.arguments)?;
+    let pending = ctx
+        .store
+        .conversation(ctx.user_id)
+        .await
+        .map_err(failed)?
+        .pending_event;
+    let event_id = join_target(requested_event_id(&call.arguments), pending)?;
     let attendance = ctx
         .store
-        .join_event(args.event_id, ctx.user_id)
+        .join_event(event_id, ctx.user_id)
         .await
         .map_err(failed)?;
-    Ok(ToolResult::event(
-        attendance_json(&attendance),
-        args.event_id,
-    ))
+    ctx.store
+        .clear_pending_event(ctx.user_id)
+        .await
+        .map_err(failed)?;
+    Ok(ToolResult::event(attendance_json(&attendance), event_id))
+}
+
+fn requested_event_id(raw: &str) -> Option<Uuid> {
+    parse::<EventIdArgs>(raw).ok().map(|args| args.event_id)
+}
+
+/// The offered meetup is the one they were asked about. A later yes does not
+/// carry that id in the transcript, and the model must not invent one.
+fn join_target(requested: Option<Uuid>, pending: Option<PendingEvent>) -> Result<Uuid, Error> {
+    if let Some(offer) = pending {
+        return Ok(offer.id);
+    }
+    requested.ok_or_else(|| Error::Failed("no event was offered".to_string()))
+}
+
+fn pending_offer(events: &[ScoredEvent]) -> Option<PendingEvent> {
+    let event = events.iter().find(|event| match event.capacity {
+        Some(cap) if event.signed_count >= i64::from(cap) => false,
+        _ => true,
+    })?;
+    Some(PendingEvent {
+        id: event.id,
+        title: event.title.clone(),
+        place_name: event.place_name.clone(),
+    })
 }
 
 async fn cancel_attendance<S: HarnessStore>(
@@ -1010,7 +1057,9 @@ mod tests {
         assert!(by_name("list_my_events").description.contains("going"));
         assert!(by_name("create_event").description.contains("lon, not lng"));
         assert!(by_name("search_place").description.contains("public place"));
-        assert!(by_name("search_events").description.contains("signed_count"));
+        assert!(by_name("search_events")
+            .description
+            .contains("signed_count"));
         assert!(by_name("join_event").description.contains("later message"));
         assert!(by_name("set_profile").description.contains("wheelchair"));
         assert!(by_name("search_events").description.contains("50.0683"));
@@ -1092,5 +1141,55 @@ mod tests {
         format!(
             r#"{{"title":"Tennis","emoji":"{emoji}","starts_at":"2026-10-04T10:00:00Z","place_name":"Park","kind":"park","lat":52.2,"lon":21.0}}"#,
         )
+    }
+
+    #[test]
+    fn the_offer_is_the_first_event_that_is_not_full() {
+        let full = scored(1, 2, Some(2));
+        let open = scored(2, 1, None);
+        let offer = pending_offer(&[full, open.clone()]).unwrap();
+        assert_eq!(offer.id, open.id);
+        assert_eq!(offer.place_name, "Lądowisko");
+        assert!(pending_offer(&[scored(1, 1, Some(1))]).is_none());
+    }
+
+    #[test]
+    fn join_follows_the_offered_event_not_an_invented_id() {
+        let offer = PendingEvent {
+            id: Uuid::from_u128(7),
+            title: "Padel".into(),
+            place_name: "Lądowisko".into(),
+        };
+        assert_eq!(join_target(None, Some(offer.clone())).unwrap(), offer.id);
+        assert_eq!(
+            join_target(Some(Uuid::from_u128(9)), Some(offer.clone())).unwrap(),
+            offer.id
+        );
+        assert_eq!(
+            join_target(Some(Uuid::from_u128(9)), None).unwrap(),
+            Uuid::from_u128(9)
+        );
+        let missing = join_target(None, None).unwrap_err();
+        assert!(missing.to_string().contains("no event was offered"));
+    }
+
+    fn scored(id: u128, signed: i64, capacity: Option<i32>) -> ScoredEvent {
+        ScoredEvent {
+            id: Uuid::from_u128(id),
+            score: 0.0,
+            promoted: false,
+            distance_m: 10.0,
+            title: "Padel".into(),
+            emoji: "🎾".into(),
+            signed_count: signed,
+            capacity,
+            place_name: "Lądowisko".into(),
+            latitude: 50.0,
+            longitude: 20.0,
+            starts_at: chrono::DateTime::parse_from_rfc3339("2026-10-04T15:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            host_name: "Ada".into(),
+        }
     }
 }

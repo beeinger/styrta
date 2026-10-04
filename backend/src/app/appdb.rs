@@ -353,6 +353,9 @@ impl Store {
 
     pub async fn create_event(&self, host_id: Uuid, event: NewEvent) -> Result<Event, Error> {
         let kind = place_kind_db(event.place_kind)?;
+        if matches!(event.capacity, Some(capacity) if capacity < 1) {
+            return Err(Error::Invalid);
+        }
         let mut tx = self.pool.begin().await.map_err(db)?;
         let place_id: Uuid = sqlx::query_scalar(
             "INSERT INTO places (name, kind, lat, lon) VALUES ($1, $2, $3, $4) RETURNING id",
@@ -386,6 +389,12 @@ impl Store {
         .fetch_one(&mut *tx)
         .await
         .map_err(db)?;
+        sqlx::query("INSERT INTO attendances (event_id, user_id, status) VALUES ($1, $2, 'going')")
+            .bind(event_id)
+            .bind(host_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
         tx.commit().await.map_err(db)?;
         let created = self.event(event_id).await?;
         self.write_event_embedding(&created).await;
@@ -626,7 +635,7 @@ impl Store {
 
     pub async fn conversation(&self, user_id: Uuid) -> Result<Conversation, Error> {
         let row: ConversationRow = sqlx::query_as(
-            "SELECT user_id, summary, summary_through, pending_place FROM conversations WHERE user_id = $1",
+            "SELECT user_id, summary, summary_through, pending_place, pending_event FROM conversations WHERE user_id = $1",
         )
         .bind(user_id)
         .fetch_one(&self.pool)
@@ -636,11 +645,16 @@ impl Store {
             Some(value) => Some(serde_json::from_value(value).map_err(|_| Error::Invalid)?),
             None => None,
         };
+        let pending_event = match row.pending_event {
+            Some(value) => Some(serde_json::from_value(value).map_err(|_| Error::Invalid)?),
+            None => None,
+        };
         Ok(Conversation {
             user_id: row.user_id,
             summary: row.summary,
             summary_through: row.summary_through,
             pending_place,
+            pending_event,
         })
     }
 
@@ -666,6 +680,35 @@ impl Store {
 
     pub async fn clear_pending_place(&self, user_id: Uuid) -> Result<(), Error> {
         sqlx::query("UPDATE conversations SET pending_place = NULL WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+
+    pub async fn set_pending_event(
+        &self,
+        user_id: Uuid,
+        event: &PendingEvent,
+    ) -> Result<(), Error> {
+        let value = serde_json::to_value(event).map_err(|_| Error::Invalid)?;
+        let updated = sqlx::query("UPDATE conversations SET pending_event = $2 WHERE user_id = $1")
+            .bind(user_id)
+            .bind(value)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?
+            .rows_affected();
+        if updated == 0 {
+            Err(Error::NotFound)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub async fn clear_pending_event(&self, user_id: Uuid) -> Result<(), Error> {
+        sqlx::query("UPDATE conversations SET pending_event = NULL WHERE user_id = $1")
             .bind(user_id)
             .execute(&self.pool)
             .await
@@ -1980,6 +2023,14 @@ pub struct Conversation {
     pub summary: Option<String>,
     pub summary_through: Option<Uuid>,
     pub pending_place: Option<PendingPlace>,
+    pub pending_event: Option<PendingEvent>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingEvent {
+    pub id: Uuid,
+    pub title: String,
+    pub place_name: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1999,6 +2050,7 @@ struct ConversationRow {
     summary: Option<String>,
     summary_through: Option<Uuid>,
     pending_place: Option<Value>,
+    pending_event: Option<Value>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2159,7 +2211,7 @@ mod tests {
                 .fetch_all(store.pool())
                 .await
                 .unwrap_or_else(|err| panic!("versions: {}", redact(&err.to_string())));
-                assert_eq!(versions, vec![1, 2, 3, 4, 5]);
+                assert_eq!(versions, vec![1, 2, 3, 4, 5, 6]);
                 let pending: i64 = sqlx::query_scalar(
                     "SELECT count(*)::bigint FROM information_schema.columns WHERE table_name = 'conversations' AND column_name = 'pending_place'",
                 )
@@ -2337,6 +2389,22 @@ mod tests {
             .unwrap()
             .pending_place
             .is_none());
+        let offered = PendingEvent {
+            id: Uuid::from_u128(7),
+            title: "Padel".into(),
+            place_name: "Lądowisko".into(),
+        };
+        store.set_pending_event(user.id, &offered).await.unwrap();
+        let loaded = store.conversation(user.id).await.unwrap();
+        assert_eq!(loaded.pending_event.as_ref().unwrap().title, "Padel");
+        assert_eq!(loaded.pending_event.as_ref().unwrap().id, offered.id);
+        store.clear_pending_event(user.id).await.unwrap();
+        assert!(store
+            .conversation(user.id)
+            .await
+            .unwrap()
+            .pending_event
+            .is_none());
     }
 
     #[tokio::test]
@@ -2414,11 +2482,18 @@ mod tests {
             .create_event(host.id, new_event("open", 1.0, 1.0, None, soon(4)))
             .await
             .unwrap();
+        assert_eq!(store.event(open.id).await.unwrap().signed_count, 1);
+        assert!(store
+            .my_events(host.id, Utc::now())
+            .await
+            .unwrap()
+            .iter()
+            .any(|event| event.id == open.id));
         let first = store.join_event(open.id, guest.id).await.unwrap();
         let second = store.join_event(open.id, guest.id).await.unwrap();
         assert_eq!(first.status, AttendanceStatus::Going);
         assert_eq!(second.status, AttendanceStatus::Going);
-        assert_eq!(store.event(open.id).await.unwrap().signed_count, 1);
+        assert_eq!(store.event(open.id).await.unwrap().signed_count, 2);
 
         let limited = store
             .create_event(host.id, new_event("limited", 1.1, 1.1, Some(1), soon(4)))
@@ -3002,7 +3077,7 @@ mod tests {
                 .fetch_all(store.pool())
                 .await
                 .unwrap();
-        assert_eq!(versions, vec![1, 2, 3, 4, 5]);
+        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6]);
     }
 
     async fn ingest_counts(pool: &PgPool) -> (i64, i64, i64, i64, i64) {

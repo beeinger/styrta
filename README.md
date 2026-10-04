@@ -16,9 +16,9 @@ Ask what already exists. Search is by meaning. An older person who says they are
 
 Talk about themselves. Age band, mobility, what they like and will not do, when they can go out, whether they will meet only women. Those facts are stored and can be corrected or forgotten. Later recommendations use them.
 
-Ask where to go, once they want that. The assistant offers one meetup: what it is, the public place, and how many people are going, then asks if they want to go. Joining happens on a later turn, after a yes. If nothing fits, it asks whether they want to post their own, and waits.
+Ask where to go, once they want that. The assistant offers one meetup: what it is, the public place, and how many people are going, then asks if they want to go. That offer is kept for the next turn. Joining happens on a later turn, after a yes, on that offered meetup. If nothing fits, it asks whether they want to post their own, and waits.
 
-Post a meetup. The assistant asks what it is, when, and which public place. It looks the place up (Nominatim, biased to Małopolska), shows the first hit on the map, and asks once whether that is the place — for example TAURON Arena Kraków at Stanisława Lema 7 in Kraków. The event is created only after that confirmation, at the coordinates the search returned.
+Post a meetup. The assistant asks what it is, when, and which public place. It looks the place up (Nominatim, biased to Małopolska), shows the first hit on the map, and asks once whether that is the place — for example TAURON Arena Kraków at Stanisława Lema 7 in Kraków. The event is created only after that confirmation, at the coordinates the search returned. The person who posted it is already going, so the meetup starts with one person.
 
 See their own meetups, cancel, or mark one complete. Each of those is a separate confirmation.
 

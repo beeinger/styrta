@@ -1354,7 +1354,7 @@ fn validate_event(body: &CreateEvent) -> Result<(), ApiError> {
     if !body.lat.is_finite() || !body.lon.is_finite() {
         return Err(bad("coordinates"));
     }
-    if matches!(body.capacity, Some(capacity) if capacity < 0) {
+    if matches!(body.capacity, Some(capacity) if capacity < 1) {
         return Err(bad("capacity"));
     }
     parse_kind(&body.kind)?;
@@ -2224,7 +2224,7 @@ mod tests {
                 "kind": "park",
                 "lat": 52.215,
                 "lon": 21.035,
-                "capacity": 1
+                "capacity": 2
             }))
             .send()
             .await
@@ -2233,6 +2233,7 @@ mod tests {
         let created: serde_json::Value = created.json().await.unwrap();
         let event_id = created["id"].as_str().unwrap();
         assert_eq!(created["emoji"], "🎉");
+        assert_eq!(created["signed_count"], 1);
 
         let bad_emoji = http()
             .post(format!("{}/v1/events", app.base))
