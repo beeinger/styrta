@@ -1,8 +1,8 @@
 # Styrta
 
-Styrta is a conversation for people in Kraków and Małopolska. They speak or type. The transcript stays on screen. Most of the time that is the whole product: talk about a problem, a public service, or a social innovation, get it explained in plain language, and keep going.
+Styrta is a conversation for people in Kraków and Małopolska. They speak or type to Jadzia. Her name is Jadwiga. The transcript stays on screen. Most of the time that is the whole product: talk about a problem, a public service, or a social innovation, get it explained in plain language, and keep going.
 
-The assistant answers from a library it has actually read, the [ROPS social-innovation catalog](https://rops.krakow.pl/innowacje-spoleczne/biblioteka-innowacji-spolecznych/kategorie). A person does not have to know that a project exists, or its name. They describe the situation. The reply can shorten a long pack of PDFs, say what the materials support, and name the page it came from. If the library has nothing, it says so.
+Jadzia answers from a library she has actually read, the [ROPS social-innovation catalog](https://rops.krakow.pl/innowacje-spoleczne/biblioteka-innowacji-spolecznych/kategorie). A person does not have to know that a project exists, or its name. They describe the situation. The reply can shorten a long pack of PDFs, say what the materials support, and name the page it came from. If the library has nothing, she says so.
 
 The same thread remembers the person and can recommend. A recommendation is offered after it has listened, and only when it fits what they said. It might be an existing innovation, a public meetup, or someone with a shared interest. They can discuss it, refuse it, or leave. Nothing is posted on its own.
 
@@ -10,15 +10,15 @@ When they do want to go out, the meeting point is a public place in the region: 
 
 ## What a person can do
 
-Talk. Ask what something is, whether it works, who it is for, and what the test actually showed. The assistant stays on the subject, asks when it needs to, and can explain again in fewer words. A turn that only discusses does not write anything.
+Talk. Ask what something is, whether it works, who it is for, and what the test actually showed. Jadzia stays on the subject, asks when she needs to, and can explain again in fewer words. A turn that only discusses does not write anything.
 
 Ask what already exists. Search is by meaning. An older person who says they are bored and their memory is going can be shown BaWita, with the ROPS page, the licence, and the limit in the test report: the page claims an effect the report does not support, and the brief says so. A name still works. BaWita, Merkury, Uniodzież. The link in the reply is the page the search returned.
 
 Talk about themselves. Age band, mobility, what they like and will not do, when they can go out, whether they will meet only women. Those facts are stored and can be corrected or forgotten. Later recommendations use them.
 
-Ask where to go, once they want that. The assistant offers one meetup: what it is, the public place, and how many people are going, then asks if they want to go. That offer is kept for the next turn. Joining happens on a later turn, after a yes, on that offered meetup. If nothing fits, it asks whether they want to post their own, and waits.
+Ask where to go, once they want that. Jadzia offers one meetup: what it is, the public place, and how many people are going, then asks if they want to go. That offer is kept for the next turn. Joining happens on a later turn, after a yes, on that offered meetup. If nothing fits, she asks whether they want to post their own, and waits.
 
-Post a meetup. The assistant asks what it is, when, and which public place. It looks the place up (Nominatim, biased to Małopolska), shows the first hit on the map, and asks once whether that is the place — for example TAURON Arena Kraków at Stanisława Lema 7 in Kraków. The event is created only after that confirmation, at the coordinates the search returned. The person who posted it is already going, so the meetup starts with one person.
+Post a meetup. Jadzia asks what it is, when, and which public place. She looks the place up (Nominatim, biased to Małopolska), shows the first hit on the map, and asks once whether that is the place — for example TAURON Arena Kraków at Stanisława Lema 7 in Kraków. The event is created only after that confirmation, at the coordinates the search returned. The person who posted it is already going, so the meetup starts with one person.
 
 See their own meetups, cancel, or mark one complete. Each of those is a separate confirmation.
 
@@ -26,7 +26,7 @@ Ask for company. The reply names the person as stored, the age band, shared inte
 
 Switch language. Polish is the default. Asking for English is a profile update, and the next replies follow.
 
-## How the assistant is kept honest
+## How Jadzia is kept honest
 
 A discussion is speech. A lookup is one tool call, then speech that uses what came back: the short version, what the materials support, the page. The model does not write to the database. The app parses the call, rejects a bad one, and runs the tool. The spoken reply after a lookup has to come from the tool result.
 
@@ -40,11 +40,11 @@ A discussion is speech. A lookup is one tool call, then speech that uses what ca
 | `create_event`, `join_event`, `cancel_attendance`, `complete_attendance` | Writes, only after the person asked |
 | `search_chat_history` | Earlier turns in this conversation |
 
-Hard filters run before any score. Cancelled, expired, and private places are dropped. An explicit dislike is dropped. When mobility says wheelchair, court sports and running are dropped before ranking: padel, tennis, basketball, volleyball, squash, badminton, football, and a run. Once the profile has any field, a women-only meetup is hidden unless the person asked for that. A full session can still be returned; the assistant is told not to offer it. Soft ranking (people already going, distance, text, time) never puts a dropped row back.
+Hard filters run before any score. Cancelled, expired, and private places are dropped. An explicit dislike is dropped. When mobility says wheelchair, court sports and running are dropped before ranking: padel, tennis, basketball, volleyball, squash, badminton, football, and a run. Once the profile has any field, a women-only meetup is hidden unless the person asked for that. A full session can still be returned; Jadzia is told not to offer it. Soft ranking (people already going, distance, text, time) never puts a dropped row back.
 
 Search of the library mixes a vector score with title overlap. A name such as BaWita still works. Links on a stored brief come from the ROPS page. The digest is rejected if the model puts a URL in the text, names a file that was not in the pack, or leaves a required field empty. When the webpage claims more than the test report, the brief follows the report.
 
-The assistant does not diagnose and does not treat.
+Jadzia does not diagnose and does not treat.
 
 ## The library
 
@@ -94,7 +94,7 @@ Accounts are email and password. The password is hashed with Argon2id. Register 
 | `GET /v1/stream` | Server-sent events for this user, including a place draft |
 | `GET`, `PATCH /v1/me` | Profile |
 | `GET /v1/events/nearby` | Public meetups in view |
-| `POST /v1/events` and `…/join`, `…/cancel`, `…/complete` | The same writes the assistant uses |
+| `POST /v1/events` and `…/join`, `…/cancel`, `…/complete` | The same writes Jadzia uses |
 | `GET /v1/me/events` | Meetups this person is on |
 | `POST /v1/chat/messages` | A turn. Text, or audio that is transcribed first |
 | `GET /v1/chat/turns/{id}` | The turn, including tool calls |
