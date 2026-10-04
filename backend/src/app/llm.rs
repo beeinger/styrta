@@ -13,7 +13,8 @@ use tokio_stream::wrappers::ReceiverStream;
 use crate::config::Config;
 use crate::endpoint::Endpoint;
 
-const ATTEMPTS: u32 = 3;
+/// The chat gateway often returns 502 for several tries, then succeeds.
+const ATTEMPTS: u32 = 8;
 const CHAT_PATH: &str = "chat/completions";
 
 pub type ModelStream = Pin<Box<dyn Stream<Item = Result<StreamItem>> + Send>>;
@@ -743,7 +744,7 @@ mod tests {
     struct Script {
         hits: Arc<AtomicUsize>,
         key: String,
-        fail_first: bool,
+        fail_times: usize,
         stream: bool,
         user_agent: Option<String>,
     }
@@ -786,8 +787,8 @@ mod tests {
             );
             return (StatusCode::OK, sse.to_string());
         }
-        if script.fail_first && n == 0 {
-            return (StatusCode::INTERNAL_SERVER_ERROR, script.key);
+        if n < script.fail_times {
+            return (StatusCode::BAD_GATEWAY, "unavailable".to_string());
         }
         (StatusCode::OK, sample_completion().to_string())
     }
@@ -823,7 +824,7 @@ mod tests {
         let base = spawn_script(Script {
             hits: hits.clone(),
             key: key.clone(),
-            fail_first: true,
+            fail_times: 1,
             stream: false,
             user_agent: None,
         })
@@ -838,6 +839,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn gateway_errors_are_retried_until_one_succeeds() {
+        let key = "llm-test-key-value".to_string();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let base = spawn_script(Script {
+            hits: hits.clone(),
+            key: key.clone(),
+            fail_times: usize::try_from(ATTEMPTS - 1).unwrap(),
+            stream: false,
+            user_agent: None,
+        })
+        .await;
+        let client = client(&base, &key);
+        let message = client
+            .complete(&CompletionRequest::new(vec![Message::User {
+                content: "hi".into(),
+            }]))
+            .await
+            .unwrap();
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            usize::try_from(ATTEMPTS).unwrap()
+        );
+        assert_eq!(message.tool_calls[0].name, "search_events");
+    }
+
+    #[tokio::test]
     async fn fatal_status_is_not_retried_and_key_is_scrubbed() {
         let key = "llm-test-key-value".to_string();
         let hits = Arc::new(AtomicUsize::new(0));
@@ -846,7 +873,7 @@ mod tests {
         let state = Script {
             hits: hits.clone(),
             key: key.clone(),
-            fail_first: false,
+            fail_times: 0,
             stream: false,
             user_agent: None,
         };
@@ -888,7 +915,7 @@ mod tests {
         let base = spawn_script(Script {
             hits: Arc::new(AtomicUsize::new(0)),
             key: key.clone(),
-            fail_first: false,
+            fail_times: 0,
             stream: true,
             user_agent: None,
         })
@@ -923,7 +950,7 @@ mod tests {
         let base = spawn_script(Script {
             hits: Arc::new(AtomicUsize::new(0)),
             key: key.clone(),
-            fail_first: false,
+            fail_times: 0,
             stream: false,
             user_agent: Some(agent.clone()),
         })
