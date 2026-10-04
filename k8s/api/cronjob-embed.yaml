@@ -1,0 +1,43 @@
+# Repair pass for profile, event, and knowledge vectors. The API also embeds
+# on write and once at startup. This catches a failed startup fill, a model
+# change, and chunks written by the daily ingest after the API is already up.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: serve-embed
+  namespace: styrta
+  labels:
+    app.kubernetes.io/name: serve-embed
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 3600
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: serve-embed
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: OnFailure
+          containers:
+            - name: embed
+              image: 192.168.10.3:30500/styrta-serve:20261004
+              imagePullPolicy: IfNotPresent
+              args: ["embed"]
+              envFrom:
+                - secretRef:
+                    name: serve
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: "1"
+                  memory: 512Mi

@@ -1,0 +1,51 @@
+# Catalog the ROPS library, then digest only new or changed archives.
+# Once a day: the site moves slowly, and a digest holds the shared chat model.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: serve-ingest
+  namespace: styrta
+  labels:
+    app.kubernetes.io/name: serve-ingest
+spec:
+  schedule: "15 3 * * *"
+  timeZone: Europe/Warsaw
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 43200
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: serve-ingest
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: OnFailure
+          containers:
+            - name: ingest
+              image: 192.168.10.3:30500/styrta-serve:20261004
+              imagePullPolicy: IfNotPresent
+              command: ["/usr/local/bin/styrta"]
+              args: ["ingest", "--concurrency", "1"]
+              envFrom:
+                - secretRef:
+                    name: serve
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  cpu: "1"
+                  memory: 2Gi
+              volumeMounts:
+                - name: work
+                  mountPath: /tmp/styrta-ingest
+          volumes:
+            - name: work
+              emptyDir:
+                sizeLimit: 12Gi

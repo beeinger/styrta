@@ -24,6 +24,9 @@ enum Command {
 
 #[derive(Args)]
 struct IngestArgs {
+    /// Parallel archive digests when catalog and digest run together.
+    #[arg(long, default_value_t = 2)]
+    concurrency: usize,
     #[command(subcommand)]
     cmd: Option<IngestCmd>,
 }
@@ -84,7 +87,12 @@ async fn main() -> Result<()> {
             }
             None => {
                 ingest::catalog(&cfg, &pool).await?;
-                ingest::digest(&cfg, &pool, ingest::opts_from(None, 2, None, false, false)).await?;
+                ingest::digest(
+                    &cfg,
+                    &pool,
+                    ingest::opts_from(None, args.concurrency, None, false, false),
+                )
+                .await?;
             }
         },
     }
