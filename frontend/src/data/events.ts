@@ -10,6 +10,7 @@ export type MeetupEvent = {
   longitude: number;
   hostName: string;
   startsAt: string;
+  hostedByMe?: boolean;
 };
 
 export function formatAttendance(signedCount: number, capacity: number | null): string {

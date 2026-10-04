@@ -1,6 +1,7 @@
 import { I18nManager, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { ReactNode } from 'react';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { colors, fonts, glassShadow, space } from '../theme';
 
 type MapZoomControlsProps = {
   bottom: number;
@@ -121,34 +122,28 @@ function CenterGlyph() {
 const styles = StyleSheet.create({
   group: {
     position: 'absolute',
-    gap: 8,
+    gap: space.sm,
   },
   button: {
     width: 48,
     height: 48,
     borderRadius: 24,
-    borderWidth: 2,
-    borderColor: '#1C1C1E',
-    backgroundColor: '#FFFFFF',
+    backgroundColor: colors.glass,
     alignItems: 'center',
     justifyContent: 'center',
-    elevation: 4,
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
+    ...glassShadow,
   },
   buttonDisabled: {
     opacity: 0.4,
   },
   buttonPressed: {
-    backgroundColor: '#E5E5EA',
+    backgroundColor: colors.white,
   },
   glyph: {
-    color: '#1C1C1E',
+    color: colors.ink,
     fontSize: 28,
     lineHeight: 32,
-    fontWeight: '500',
+    fontFamily: fonts.semibold,
     textAlign: 'center',
   },
   target: {
@@ -163,12 +158,12 @@ const styles = StyleSheet.create({
     height: 18,
     borderRadius: 9,
     borderWidth: 2,
-    borderColor: '#1C1C1E',
+    borderColor: colors.ink,
   },
   targetDot: {
     width: 6,
     height: 6,
     borderRadius: 3,
-    backgroundColor: '#1C1C1E',
+    backgroundColor: colors.ink,
   },
 });

@@ -8,5 +8,6 @@
     "arena-coffee",
     "arena-jam",
     "arena-games"
-  ]
+  ],
+  "hostedEventIds": ["arena-games"]
 }

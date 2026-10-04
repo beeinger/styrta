@@ -19,6 +19,7 @@ import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import { getMyEvents, getNearbyEvents, signIn as requestSignIn, signUp as requestSignUp } from "../api/client";
 import { ApiError, type MyEvent, type NearbyEvent, type Session } from "../api/types";
 import { describeAttendance, formatEventStart, type MeetupEvent } from "../data/events";
+import { chatCornerRadius, space } from "../theme";
 import { AiChatSheet } from "./AiChatSheet";
 import { AttendingBubbles } from "./AttendingBubbles";
 import { createMapHtml, type MapMarker, type MapPadding } from "./mapDocument";
@@ -47,7 +48,6 @@ type Coordinates = {
 
 const MIN_ZOOM = 3;
 const MAX_ZOOM = 15;
-const PANEL_GAP = 8;
 const FETCH_DEBOUNCE_MS = 300;
 
 type Viewport = {
@@ -324,7 +324,9 @@ export function MapScreen() {
   const mapPadding = useMemo<MapPadding>(
     () => ({
       top: insets.top,
-      bottom: 0,
+      // The map draws this far under the chat so the rounded corners show
+      // tiles. The same inset keeps the visual center where it was.
+      bottom: chatCornerRadius,
       left: I18nManager.isRTL ? endClearance : startClearance,
       right: I18nManager.isRTL ? startClearance : endClearance,
     }),
@@ -357,7 +359,7 @@ export function MapScreen() {
           if (cancelled) {
             return;
           }
-          setAttending(events.map(myEventToMeetup));
+          setAttending(events.map((event) => myEventToMeetup(event, session.id)));
         })
         .catch((error: unknown) => {
           if (cancelled) {
@@ -554,7 +556,10 @@ export function MapScreen() {
         <WebView
           ref={webViewRef}
           source={{ html, baseUrl: "https://localhost" }}
-          style={[styles.map, { bottom: mapBottom }]}
+          style={[
+            styles.map,
+            { bottom: Math.max(0, mapBottom - chatCornerRadius) },
+          ]}
           onLayout={(event) => {
             const next = Math.round(event.nativeEvent.layout.height);
             if (next === mapFrameHeight.current) {
@@ -664,10 +669,10 @@ export function MapScreen() {
         expanded={eventsOpen}
         concealed={chatCoversEvents}
         onExpandedChange={setEventsOpen}
-        top={insets.top + 12}
-        bottom={mapBottom + PANEL_GAP}
-        start={Math.max(PANEL_GAP * 2, startInset) / 2}
-        end={PANEL_GAP}
+        top={insets.top + space.md}
+        bottom={mapBottom + space.sm}
+        start={Math.max(space.sm * 2, startInset) / 2}
+        end={space.sm}
         onFocusEvent={focusEvent}
       />
     </View>
@@ -762,7 +767,7 @@ function nearbyKeyFor(viewport: Viewport | null, userLocation: Coordinates | nul
   return "arena";
 }
 
-function myEventToMeetup(event: MyEvent): MeetupEvent {
+function myEventToMeetup(event: MyEvent, userId: string): MeetupEvent {
   return {
     id: event.id,
     emoji: event.emoji,
@@ -773,6 +778,7 @@ function myEventToMeetup(event: MyEvent): MeetupEvent {
     longitude: event.longitude,
     hostName: event.host_name,
     startsAt: event.starts_at,
+    hostedByMe: event.host_id === userId,
   };
 }
 

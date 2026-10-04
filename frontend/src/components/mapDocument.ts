@@ -1,3 +1,5 @@
+import { colors, space } from "../theme";
+
 export type MapMarker = {
   id: string;
   latitude: number;
@@ -38,6 +40,10 @@ export function createMapHtml(options: MapDocumentOptions): string {
     />
     <link
       rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600&display=swap"
+    />
+    <link
+      rel="stylesheet"
       href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
     />
     <style>
@@ -55,7 +61,7 @@ export function createMapHtml(options: MapDocumentOptions): string {
       }
       .leaflet-container {
         background: #f2f2f7;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-family: Nunito, sans-serif;
       }
       .leaflet-bottom.leaflet-left {
         margin-bottom: var(--map-pad-bottom, 0px);
@@ -77,10 +83,9 @@ export function createMapHtml(options: MapDocumentOptions): string {
       .event-bubble {
         width: 48px;
         height: 48px;
-        border-radius: 24px;
-        background: #ffffff;
-        border: 2px solid #1c1c1e;
-        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.22);
+        border-radius: 50%;
+        background: ${colors.glass};
+        box-shadow: 0 8px 20px rgba(0,0,0,0.16);
         display: flex;
         align-items: center;
         justify-content: center;
@@ -88,37 +93,25 @@ export function createMapHtml(options: MapDocumentOptions): string {
         line-height: 1;
       }
       .event-marker.is-selected .event-bubble {
-        border-color: #0a84ff;
+        background: ${colors.glassSelected};
       }
       .event-card {
         display: none;
         position: absolute;
         left: 50%;
-        bottom: calc(100% + 10px);
+        bottom: calc(100% + ${space.sm}px);
         transform: translateX(-50%);
         width: max-content;
         max-width: 200px;
-        background: #ffffff;
-        border: 2px solid #1c1c1e;
-        border-radius: 16px;
-        padding: 10px 14px 12px;
+        background: ${colors.glass};
+        border-radius: ${space.lg}px;
+        padding: ${space.md}px ${space.lg}px;
+        box-shadow: 0 8px 20px rgba(0,0,0,0.16);
         text-align: center;
         pointer-events: none;
       }
       .event-marker.is-selected .event-card {
         display: block;
-      }
-      .event-card-tail {
-        position: absolute;
-        left: 50%;
-        bottom: -7px;
-        width: 12px;
-        height: 12px;
-        margin-left: -6px;
-        background: #ffffff;
-        border-right: 2px solid #1c1c1e;
-        border-bottom: 2px solid #1c1c1e;
-        transform: rotate(45deg);
       }
       .event-host,
       .event-title,
@@ -128,37 +121,44 @@ export function createMapHtml(options: MapDocumentOptions): string {
         overflow-wrap: anywhere;
       }
       .event-host {
-        color: #636366;
+        color: ${colors.inkMuted};
         font-size: 13px;
+        font-weight: 400;
         line-height: 18px;
       }
       .event-title {
-        margin-top: 2px;
-        color: #1c1c1e;
+        margin-top: ${space.xs}px;
+        color: ${colors.ink};
         font-size: 16px;
         font-weight: 600;
         line-height: 22px;
       }
       .event-time {
-        margin-top: 2px;
-        color: #636366;
+        margin-top: ${space.xs}px;
+        color: ${colors.inkMuted};
         font-size: 13px;
+        font-weight: 400;
         line-height: 18px;
       }
       .event-count {
-        margin-top: 4px;
-        color: #1c1c1e;
+        margin-top: ${space.xs}px;
+        color: ${colors.ink};
         font-size: 15px;
         font-weight: 600;
         line-height: 20px;
       }
       .user-location {
+        position: absolute;
+        left: 50%;
+        top: 50%;
         width: 18px;
         height: 18px;
-        border-radius: 9px;
+        transform: translate(-50%, -50%);
+        border: 2px solid #ffffff;
+        border-radius: 50%;
+        box-sizing: border-box;
         background: #0a84ff;
-        border: 3px solid #ffffff;
-        box-shadow: 0 0 0 8px rgba(10, 132, 255, 0.25);
+        box-shadow: 0 0 0 7px rgba(10, 132, 255, 0.35);
       }
     </style>
   </head>
@@ -335,11 +335,7 @@ export function createMapHtml(options: MapDocumentOptions): string {
             count.className = "event-count";
             count.textContent = countText(item);
 
-            const tail = document.createElement("div");
-            tail.className = "event-card-tail";
-            tail.setAttribute("aria-hidden", "true");
-
-            card.append(host, title, time, count, tail);
+            card.append(host, title, time, count);
 
             const bubble = document.createElement("div");
             bubble.className = "event-bubble";
@@ -431,8 +427,8 @@ export function createMapHtml(options: MapDocumentOptions): string {
                 icon: L.divIcon({
                   className: "pin-wrap",
                   html: dot,
-                  iconSize: [18, 18],
-                  iconAnchor: [9, 9],
+                  iconSize: [34, 34],
+                  iconAnchor: [17, 17],
                 }),
                 keyboard: false,
                 interactive: false,

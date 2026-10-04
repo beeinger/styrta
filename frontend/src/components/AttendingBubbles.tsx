@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AccessibilityInfo,
+  LayoutAnimation,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -14,6 +15,8 @@ import {
   formatEventStart,
   type MeetupEvent,
 } from "../data/events";
+import { isHostedEvent } from "../data/session";
+import { colors, fonts, glassShadow, space } from "../theme";
 
 type AttendingBubblesProps = {
   events: MeetupEvent[];
@@ -25,6 +28,21 @@ type AttendingBubblesProps = {
   concealed: boolean;
   onExpandedChange: (expanded: boolean) => void;
   onFocusEvent: (event: MeetupEvent) => void;
+};
+
+const unroll = {
+  duration: 280,
+  create: {
+    type: LayoutAnimation.Types.easeInEaseOut,
+    property: LayoutAnimation.Properties.scaleY,
+  },
+  update: {
+    type: LayoutAnimation.Types.easeInEaseOut,
+  },
+  delete: {
+    type: LayoutAnimation.Types.easeInEaseOut,
+    property: LayoutAnimation.Properties.opacity,
+  },
 };
 
 export function AttendingBubbles({
@@ -39,7 +57,35 @@ export function AttendingBubbles({
   onFocusEvent,
 }: AttendingBubblesProps) {
   const [hiddenIds, setHiddenIds] = useState<string[]>([]);
+  const [reduceMotion, setReduceMotion] = useState(false);
+  const expandedRef = useRef(expanded);
   const visible = events.filter((event) => !hiddenIds.includes(event.id));
+
+  if (expandedRef.current !== expanded) {
+    if (!reduceMotion) {
+      LayoutAnimation.configureNext(unroll);
+    }
+    expandedRef.current = expanded;
+  }
+
+  useEffect(() => {
+    let active = true;
+    void AccessibilityInfo.isReduceMotionEnabled().then((enabled) => {
+      if (active) {
+        setReduceMotion(enabled);
+      }
+    });
+    const subscription = AccessibilityInfo.addEventListener(
+      "reduceMotionChanged",
+      (enabled) => {
+        setReduceMotion(enabled);
+      },
+    );
+    return () => {
+      active = false;
+      subscription.remove();
+    };
+  }, []);
 
   useEffect(() => {
     if (visible.length === 0) {
@@ -80,11 +126,11 @@ export function AttendingBubbles({
               onExpandedChange(false);
               AccessibilityInfo.announceForAccessibility("Events closed");
             }}
-            hitSlop={4}
+            hitSlop={space.xs}
             style={({ pressed }) => [
               styles.bubble,
               styles.closeBubble,
-              pressed && styles.pressed,
+              pressed && styles.bubblePressed,
             ]}
           >
             <Text
@@ -96,26 +142,23 @@ export function AttendingBubbles({
               ×
             </Text>
           </Pressable>
-          <View style={styles.panel}>
-            <ScrollView
-              style={styles.list}
-              contentContainerStyle={styles.listContent}
-              keyboardShouldPersistTaps="handled"
-            >
-              {visible.map((event, index) => (
-                <EventRow
-                  key={event.id}
-                  event={event}
-                  last={index === visible.length - 1}
-                  onFocus={() => {
-                    onExpandedChange(false);
-                    onFocusEvent(event);
-                  }}
-                  onHide={() => hide(event)}
-                />
-              ))}
-            </ScrollView>
-          </View>
+          <ScrollView
+            style={styles.list}
+            contentContainerStyle={styles.listContent}
+            keyboardShouldPersistTaps="handled"
+          >
+            {visible.map((event) => (
+              <EventRow
+                key={event.id}
+                event={event}
+                onFocus={() => {
+                  onExpandedChange(false);
+                  onFocusEvent(event);
+                }}
+                onHide={() => hide(event)}
+              />
+            ))}
+          </ScrollView>
         </View>
       ) : (
         <View style={styles.stack}>
@@ -131,15 +174,15 @@ export function AttendingBubbles({
                   "Showing events you are attending",
                 );
               }}
-              hitSlop={4}
+              hitSlop={space.xs}
               style={({ pressed }) => [
                 styles.bubble,
                 index > 0 && styles.bubblePeek,
                 {
                   zIndex: visible.length - index,
-                  elevation: visible.length - index,
+                  elevation: glassShadow.elevation + visible.length - index,
                 },
-                pressed && styles.pressed,
+                pressed && styles.bubblePressed,
               ]}
             >
               <Text
@@ -160,44 +203,54 @@ export function AttendingBubbles({
 
 type EventRowProps = {
   event: MeetupEvent;
-  last: boolean;
   onFocus: () => void;
   onHide: () => void;
 };
 
-function EventRow({ event, last, onFocus, onHide }: EventRowProps) {
+function EventRow({ event, onFocus, onHide }: EventRowProps) {
   const when = formatEventStart(event.startsAt);
   const attendance = describeAttendance(event.signedCount, event.capacity);
+  const hosting = event.hostedByMe === true || isHostedEvent(event.id);
+  const role = hosting ? "You are hosting" : "You are attending";
   return (
-    <View style={[styles.row, !last && styles.rowDivider]}>
-      <Text
-        style={styles.rowEmoji}
-        maxFontSizeMultiplier={1.6}
-        importantForAccessibility="no"
-        accessibilityElementsHidden
-      >
-        {event.emoji}
-      </Text>
+    <View style={styles.row}>
       <View
-        accessible
-        accessibilityLabel={`${event.hostName}, ${event.title}, ${when}, ${attendance}`}
-        style={styles.details}
+        style={[
+          styles.emojiCircle,
+          { backgroundColor: hosting ? colors.primary : colors.secondary },
+        ]}
       >
-        <Text style={styles.host}>{event.hostName}</Text>
-        <Text style={styles.title}>{event.title}</Text>
-        <Text style={styles.time}>{when}</Text>
-        <Text style={styles.count}>
-          {formatAttendance(event.signedCount, event.capacity)}
+        <Text
+          style={styles.emoji}
+          maxFontSizeMultiplier={1.6}
+          importantForAccessibility="no"
+          accessibilityElementsHidden
+        >
+          {event.emoji}
         </Text>
       </View>
-      <View style={styles.actions}>
-        <RowButton
-          label={`Show ${event.title} on the map`}
-          glyph="📍"
-          onPress={onFocus}
-        />
-        <RowButton label={`Hide ${event.title}`} glyph="✓" onPress={onHide} />
-        <RowButton label={`Remove ${event.title}`} glyph="✕" onPress={onHide} />
+      <View style={styles.pill}>
+        <View
+          accessible
+          accessibilityLabel={`${event.hostName}, ${event.title}, ${when}, ${attendance}. ${role}`}
+          style={styles.details}
+        >
+          <Text style={styles.host}>{event.hostName}</Text>
+          <Text style={styles.title}>{event.title}</Text>
+          <Text style={styles.time}>{when}</Text>
+          <Text style={styles.count}>
+            {formatAttendance(event.signedCount, event.capacity)}
+          </Text>
+        </View>
+        <View style={styles.actions}>
+          <RowButton
+            label={`Show ${event.title} on the map`}
+            glyph="📍"
+            onPress={onFocus}
+          />
+          <RowButton label={`Hide ${event.title}`} glyph="✓" onPress={onHide} />
+          <RowButton label={`Remove ${event.title}`} glyph="✕" onPress={onHide} />
+        </View>
       </View>
     </View>
   );
@@ -215,17 +268,21 @@ function RowButton({ label, glyph, onPress }: RowButtonProps) {
       accessibilityRole="button"
       accessibilityLabel={label}
       onPress={onPress}
-      hitSlop={4}
-      style={({ pressed }) => [styles.rowButton, pressed && styles.pressed]}
+      style={styles.rowButton}
     >
-      <Text
-        style={styles.rowGlyph}
-        maxFontSizeMultiplier={1.4}
-        importantForAccessibility="no"
-        accessibilityElementsHidden
-      >
-        {glyph}
-      </Text>
+      {({ pressed }) => (
+        <>
+          {pressed ? <View style={styles.rowButtonPressed} /> : null}
+          <Text
+            style={styles.rowGlyph}
+            maxFontSizeMultiplier={1.4}
+            importantForAccessibility="no"
+            accessibilityElementsHidden
+          >
+            {glyph}
+          </Text>
+        </>
+      )}
     </Pressable>
   );
 }
@@ -242,23 +299,17 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
     paddingTop: "10%",
-    gap: 8,
+    gap: space.sm,
     justifyContent: "flex-start",
   },
   bubble: {
     width: 48,
     height: 48,
     borderRadius: 24,
-    borderWidth: 2,
-    borderColor: "#1C1C1E",
-    backgroundColor: "#FFFFFF",
+    backgroundColor: colors.glass,
     alignItems: "center",
     justifyContent: "center",
-    elevation: 4,
-    shadowColor: "#000000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
+    ...glassShadow,
   },
   closeBubble: {
     alignSelf: "flex-start",
@@ -266,101 +317,102 @@ const styles = StyleSheet.create({
   bubblePeek: {
     marginTop: -40,
   },
-  pressed: {
-    backgroundColor: "#E5E5EA",
+  bubblePressed: {
+    backgroundColor: colors.glassSelected,
   },
   emoji: {
     fontSize: 24,
     lineHeight: 30,
     textAlign: "center",
   },
-  rowEmoji: {
-    fontSize: 24,
-    lineHeight: 30,
-    textAlign: "center",
-    width: 32,
-  },
   closeGlyph: {
-    color: "#1C1C1E",
+    color: colors.ink,
+    fontFamily: fonts.semibold,
     fontSize: 28,
     lineHeight: 32,
-    fontWeight: "500",
     textAlign: "center",
-  },
-  panel: {
-    flexGrow: 0,
-    flexShrink: 1,
-    minHeight: 0,
-    alignSelf: "stretch",
-    backgroundColor: "#FFFFFF",
-    borderColor: "#1C1C1E",
-    borderRadius: 16,
-    borderWidth: 2,
-    overflow: "hidden",
-    elevation: 4,
-    shadowColor: "#000000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
   },
   list: {
     flexGrow: 0,
     flexShrink: 1,
   },
   listContent: {
-    paddingVertical: 4,
+    gap: space.sm,
+    paddingVertical: space.xs,
   },
   row: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    paddingStart: 14,
-    paddingEnd: 8,
-    paddingVertical: 10,
+    gap: space.sm,
   },
-  rowDivider: {
-    borderBottomColor: "#E5E5EA",
-    borderBottomWidth: StyleSheet.hairlineWidth,
+  emojiCircle: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    ...glassShadow,
+  },
+  pill: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.sm,
+    backgroundColor: colors.glass,
+    borderRadius: 999,
+    paddingVertical: space.md,
+    paddingHorizontal: space.lg,
+    ...glassShadow,
   },
   details: {
     flex: 1,
+    minWidth: 0,
+    gap: space.xs,
   },
   host: {
-    color: "#636366",
+    color: colors.inkMuted,
+    fontFamily: fonts.regular,
     fontSize: 13,
     lineHeight: 18,
   },
   title: {
-    marginTop: 2,
-    color: "#1C1C1E",
+    color: colors.ink,
+    fontFamily: fonts.semibold,
     fontSize: 16,
-    fontWeight: "600",
     lineHeight: 22,
   },
   time: {
-    marginTop: 2,
-    color: "#636366",
+    color: colors.inkMuted,
+    fontFamily: fonts.regular,
     fontSize: 13,
     lineHeight: 18,
   },
   count: {
-    marginTop: 4,
-    color: "#1C1C1E",
+    color: colors.ink,
+    fontFamily: fonts.semibold,
     fontSize: 15,
-    fontWeight: "600",
     lineHeight: 20,
   },
   actions: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
+    flexShrink: 0,
+    gap: space.xs,
   },
   rowButton: {
     width: 44,
     height: 44,
     borderRadius: 22,
+    backgroundColor: colors.quaternaryWash,
     alignItems: "center",
     justifyContent: "center",
+    overflow: "hidden",
+  },
+  rowButtonPressed: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: colors.quaternary,
+    opacity: 0.24,
   },
   rowGlyph: {
     fontSize: 20,

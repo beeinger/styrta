@@ -31,6 +31,7 @@ import {
   type SpeechClip,
 } from "../api/client";
 import { ApiError, type ChatStreamEvent, type HistoryMessage } from "../api/types";
+import { chatCornerRadius, colors, fonts, space } from "../theme";
 
 type AiChatSheetProps = {
   accessToken: string | null;
@@ -56,7 +57,7 @@ type ChatMessage = {
 };
 
 const BAR_HEIGHTS = [7, 13, 19, 13, 7];
-const CARD_PADDING_TOP = 4;
+const CARD_PADDING_TOP = space.xs;
 const POLL_INTERVAL_MS = 700;
 const POLL_DEADLINE_MS = 180_000;
 const THINKING_LINE = "Thinking...";
@@ -925,11 +926,11 @@ export function AiChatSheet({
                   disabled: sendingVoice,
                 }}
                 disabled={sendingVoice}
+                hitSlop={space.md}
                 onPress={onSpeak}
-                style={({ pressed }) => [
+                style={[
                   styles.speak,
                   listening && styles.speakListening,
-                  pressed && !sendingVoice && styles.pressed,
                   sendingVoice && styles.authButtonDisabled,
                 ]}
               >
@@ -948,7 +949,7 @@ export function AiChatSheet({
                 onChangeText={setDraft}
                 onSubmitEditing={sendDraft}
                 placeholder="Message"
-                placeholderTextColor="#8E8E93"
+                placeholderTextColor={colors.inkMuted}
                 returnKeyType="send"
                 enablesReturnKeyAutomatically
                 submitBehavior="submit"
@@ -1140,19 +1141,17 @@ const styles = StyleSheet.create({
     bottom: 0,
   },
   card: {
-    backgroundColor: "#FFFFFF",
-    borderColor: "#3A3A3C",
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    borderWidth: 1,
-    borderBottomWidth: 0,
-    paddingHorizontal: 16,
+    backgroundColor: colors.tertiaryWash,
+    borderTopLeftRadius: chatCornerRadius,
+    borderTopRightRadius: chatCornerRadius,
+    borderWidth: 0,
+    paddingHorizontal: space.lg,
     paddingTop: CARD_PADDING_TOP,
     elevation: 8,
     shadowColor: "#000000",
-    shadowOffset: { width: 0, height: -2 },
+    shadowOffset: { width: 0, height: -8 },
     shadowOpacity: 0.16,
-    shadowRadius: 12,
+    shadowRadius: 20,
   },
   header: {
     flexDirection: "row",
@@ -1171,7 +1170,7 @@ const styles = StyleSheet.create({
     height: 12,
     borderBottomWidth: 2.5,
     borderRightWidth: 2.5,
-    borderColor: "#1C1C1E",
+    borderColor: colors.ink,
   },
   chevronUp: {
     transform: [{ translateY: 3 }, { rotate: "-135deg" }],
@@ -1185,76 +1184,72 @@ const styles = StyleSheet.create({
   transcriptContent: {
     flexGrow: 1,
     justifyContent: "flex-end",
-    gap: 8,
-    paddingBottom: 12,
+    gap: space.sm,
+    paddingBottom: space.md,
   },
   transcriptEmpty: {
     justifyContent: "center",
   },
   empty: {
-    color: "#3A3A3C",
+    color: colors.ink,
+    fontFamily: fonts.regular,
     fontSize: 16,
     lineHeight: 22,
     textAlign: "center",
-    paddingHorizontal: 12,
+    paddingHorizontal: space.md,
   },
   bubble: {
     alignSelf: "flex-end",
     maxWidth: "85%",
-    backgroundColor: "#1C1C1E",
+    backgroundColor: colors.quaternary,
     borderRadius: 16,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingHorizontal: space.md,
+    paddingVertical: space.md,
   },
   assistantBubble: {
     alignSelf: "flex-start",
-    backgroundColor: "#F2F2F7",
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: colors.line,
   },
   bubbleText: {
-    color: "#FFFFFF",
+    color: colors.ink,
+    fontFamily: fonts.regular,
     fontSize: 16,
     lineHeight: 22,
   },
   assistantText: {
-    color: "#1C1C1E",
+    color: colors.ink,
   },
   pendingText: {
-    color: "#8E8E93",
+    color: colors.inkMuted,
     fontStyle: "italic",
   },
   pendingStatus: {
-    color: "#8E8E93",
+    color: colors.inkMuted,
+    fontFamily: fonts.regular,
     fontSize: 16,
     fontStyle: "italic",
     lineHeight: 22,
     textAlign: "center",
-    marginBottom: 8,
+    marginBottom: space.sm,
   },
   speak: {
-    minHeight: 52,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 12,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "#3A3A3C",
-    backgroundColor: "#F2F2F7",
-    paddingHorizontal: 16,
-    marginBottom: 10,
+    gap: space.sm,
+    marginBottom: space.sm,
   },
-  speakListening: {
-    backgroundColor: "#1C1C1E",
-    borderColor: "#1C1C1E",
-  },
+  speakListening: {},
   speakLabel: {
-    color: "#1C1C1E",
-    fontSize: 17,
-    fontWeight: "600",
-    lineHeight: 22,
+    color: colors.primary,
+    fontFamily: fonts.semibold,
+    fontSize: 15,
+    lineHeight: 20,
   },
   speakLabelListening: {
-    color: "#FFFFFF",
+    color: colors.primary,
   },
   wave: {
     width: 28,
@@ -1266,30 +1261,32 @@ const styles = StyleSheet.create({
   bar: {
     width: 3,
     borderRadius: 1.5,
-    backgroundColor: "#1C1C1E",
+    backgroundColor: colors.primary,
   },
   barListening: {
-    backgroundColor: "#FFFFFF",
+    backgroundColor: colors.primary,
   },
   input: {
     minHeight: 48,
-    borderRadius: 16,
+    backgroundColor: colors.white,
+    borderRadius: 999,
     borderWidth: 1,
-    borderColor: "#3A3A3C",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    color: "#1C1C1E",
+    borderColor: colors.lineStrong,
+    paddingHorizontal: space.lg,
+    paddingVertical: space.md,
+    color: colors.ink,
+    fontFamily: fonts.regular,
     fontSize: 17,
     lineHeight: 22,
   },
   authActions: {
-    gap: 10,
+    gap: space.md,
   },
   fieldLabel: {
-    color: "#1C1C1E",
+    color: colors.ink,
+    fontFamily: fonts.semibold,
     fontSize: 15,
     lineHeight: 20,
-    fontWeight: "600",
   },
   authButton: {
     minHeight: 52,
@@ -1297,17 +1294,17 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: "#3A3A3C",
-    backgroundColor: "#FFFFFF",
-    paddingHorizontal: 16,
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.white,
+    paddingHorizontal: space.lg,
   },
   authButtonDisabled: {
     opacity: 0.4,
   },
   authLabel: {
-    color: "#1C1C1E",
+    color: colors.ink,
+    fontFamily: fonts.semibold,
     fontSize: 17,
-    fontWeight: "600",
     lineHeight: 22,
   },
   authSwitch: {
@@ -1316,18 +1313,20 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   authSwitchLabel: {
-    color: "#3A3A3C",
+    color: colors.ink,
+    fontFamily: fonts.regular,
     fontSize: 15,
     lineHeight: 20,
     textAlign: "center",
   },
   errorText: {
-    color: "#1C1C1E",
+    color: colors.ink,
+    fontFamily: fonts.regular,
     fontSize: 16,
     lineHeight: 22,
     textAlign: "center",
   },
   pressed: {
-    backgroundColor: "#E5E5EA",
+    backgroundColor: colors.line,
   },
 });
