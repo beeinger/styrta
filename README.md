@@ -24,6 +24,8 @@ I do tego działający frontend w React Native, deployed na stronie internetowej
 
 Wszystko w pełni deployed. Wszystko działa.
 
+## What is it?
+
 Styrta is a conversation for people in Kraków and Małopolska. They speak or type to Jadzia. Her name is Jadwiga. The transcript stays on screen. Most of the time that is the whole product: talk about a problem, a public service, or a social innovation, get it explained in plain language, and keep going.
 
 Jadzia answers from a library she has actually read, the [ROPS social-innovation catalog](https://rops.krakow.pl/innowacje-spoleczne/biblioteka-innowacji-spolecznych/kategorie). A person does not have to know that a project exists, or its name. They describe the situation. The reply can shorten a long pack of PDFs, say what the materials support, and name the page it came from. If the library has nothing, she says so.
