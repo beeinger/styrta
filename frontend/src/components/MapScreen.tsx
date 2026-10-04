@@ -119,6 +119,7 @@ export function MapScreen() {
   nearbyQueryRef.current = nearbyQuery;
   const obstruction = sheetHeight || 168;
   const mapBottom = chatTop || obstruction;
+  const mapFrameBottom = Math.max(0, mapBottom - chatCornerRadius);
 
   const html = useMemo(() => {
     if (!startCamera) {
@@ -220,9 +221,8 @@ export function MapScreen() {
       return;
     }
     run(
-      `window.__styrtaMap.centerOn(${coords.latitude}, ${coords.longitude}, ${reduceMotionRef.current ? "false" : "true"})`,
+      `window.__styrtaMap.panTo(${coords.latitude}, ${coords.longitude}, ${reduceMotionRef.current ? "false" : "true"})`,
     );
-    setZoom((currentZoom) => Math.max(currentZoom, USER_ZOOM));
     if (announce) {
       AccessibilityInfo.announceForAccessibility("Centered on your location");
     }
@@ -558,7 +558,7 @@ export function MapScreen() {
           source={{ html, baseUrl: "https://localhost" }}
           style={[
             styles.map,
-            { bottom: Math.max(0, mapBottom - chatCornerRadius) },
+            { bottom: mapFrameBottom },
           ]}
           onLayout={(event) => {
             const next = Math.round(event.nativeEvent.layout.height);
@@ -634,7 +634,7 @@ export function MapScreen() {
             tint="light"
             blurMethod="dimezisBlurView"
             pointerEvents="none"
-            style={[styles.mapOverlay, { bottom: mapBottom }]}
+            style={[styles.mapOverlay, { bottom: mapFrameBottom }]}
           />
           <Pressable
             accessibilityRole="button"

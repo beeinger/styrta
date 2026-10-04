@@ -245,6 +245,19 @@ export function createMapHtml(options: MapDocumentOptions): string {
           }
         }
 
+        function moveTo(latitude, longitude, animate, zoomIn) {
+          const zoom = zoomIn
+            ? Math.min(INITIAL.maxZoom, Math.max(map.getZoom(), 14))
+            : map.getZoom();
+          const point = map
+            .project([latitude, longitude], zoom)
+            .subtract(paddingOffset());
+          map.setView(map.unproject(point, zoom), zoom, {
+            animate: Boolean(animate),
+          });
+          appliedOffset = paddingOffset();
+        }
+
         function countText(item) {
           if (item.capacity == null) {
             return String(item.signedCount);
@@ -406,17 +419,10 @@ export function createMapHtml(options: MapDocumentOptions): string {
           setMarkers: setMarkers,
           setSelected: setSelected,
           centerOn(latitude, longitude, animate) {
-            const zoom = Math.min(
-              INITIAL.maxZoom,
-              Math.max(map.getZoom(), 14),
-            );
-            const point = map
-              .project([latitude, longitude], zoom)
-              .subtract(paddingOffset());
-            map.setView(map.unproject(point, zoom), zoom, {
-              animate: Boolean(animate),
-            });
-            appliedOffset = paddingOffset();
+            moveTo(latitude, longitude, animate, true);
+          },
+          panTo(latitude, longitude, animate) {
+            moveTo(latitude, longitude, animate, false);
           },
           setUserLocation(latitude, longitude) {
             const latLng = [latitude, longitude];

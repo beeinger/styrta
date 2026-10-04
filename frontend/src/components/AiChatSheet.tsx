@@ -1671,13 +1671,13 @@ const styles = StyleSheet.create({
   },
   speakListening: {},
   speakLabel: {
-    color: colors.primary,
+    color: colors.primaryStrong,
     fontFamily: fonts.semibold,
     fontSize: 15,
     lineHeight: 20,
   },
   speakLabelListening: {
-    color: colors.primary,
+    color: colors.primaryStrong,
   },
   wave: {
     width: 28,
@@ -1689,10 +1689,10 @@ const styles = StyleSheet.create({
   bar: {
     width: 3,
     borderRadius: 1.5,
-    backgroundColor: colors.primary,
+    backgroundColor: colors.primaryStrong,
   },
   barListening: {
-    backgroundColor: colors.primary,
+    backgroundColor: colors.primaryStrong,
   },
   input: {
     minHeight: 48,

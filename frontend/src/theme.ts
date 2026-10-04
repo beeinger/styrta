@@ -5,8 +5,9 @@ export const colors = {
   quaternary: "#cb8f52",
   tertiaryWash: "#F6EBDA", // 40% tertiary mixed with 60% white. Solid, so text contrast is stable.
   quaternaryWash: "rgba(203, 143, 82, 0.28)",
-  glass: "rgba(255, 255, 255, 0.78)",
-  glassSelected: "rgba(236, 229, 156, 0.78)", // secondary at the same alpha as glass
+  glass: "rgba(255, 255, 255, 0.94)",
+  glassSelected: "rgba(236, 229, 156, 0.94)", // secondary at the same alpha as glass
+  primaryStrong: "#3F5C34",
   ink: "#1C1C1E",
   inkMuted: "#636366",
   line: "#D1D1D6",

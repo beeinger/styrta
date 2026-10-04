@@ -109,11 +109,10 @@ function ZoomButton({ label, hint, glyph, disabled, onPress }: ZoomButtonProps) 
 function CenterGlyph() {
   return (
     <View
-      style={styles.target}
+      style={styles.targetRing}
       importantForAccessibility="no"
       accessibilityElementsHidden
     >
-      <View style={styles.targetRing} />
       <View style={styles.targetDot} />
     </View>
   );
@@ -142,23 +141,22 @@ const styles = StyleSheet.create({
   glyph: {
     color: colors.ink,
     fontSize: 28,
-    lineHeight: 32,
+    lineHeight: 28,
+    height: 28,
+    width: 28,
     fontFamily: fonts.semibold,
     textAlign: 'center',
-  },
-  target: {
-    width: 22,
-    height: 22,
-    alignItems: 'center',
-    justifyContent: 'center',
+    textAlignVertical: 'center',
+    includeFontPadding: false,
   },
   targetRing: {
-    position: 'absolute',
     width: 18,
     height: 18,
     borderRadius: 9,
     borderWidth: 2,
     borderColor: colors.ink,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   targetDot: {
     width: 6,
