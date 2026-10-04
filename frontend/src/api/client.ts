@@ -141,29 +141,45 @@ export function spokenReplySource(
 }
 
 async function sendAudio(accessToken: string, clip: SpeechClip): Promise<Response> {
-  return fetch(`${API_BASE_URL}/v1/chat/messages`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${accessToken}` },
-    body: await audioBody(clip),
-  });
+  if (Platform.OS === "web") {
+    return fetch(`${API_BASE_URL}/v1/chat/messages`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}` },
+      body: await webAudioBody(clip),
+    });
+  }
+  return sendAudioNative(accessToken, clip);
 }
 
-async function audioBody(clip: SpeechClip): Promise<FormData> {
+async function webAudioBody(clip: SpeechClip): Promise<FormData> {
+  const response = await fetch(clip.uri);
+  const blob = await response.blob();
+  const type = blob.type || clip.type;
+  const file = blob.type === type ? blob : new Blob([blob], { type });
   const body = new FormData();
-  if (Platform.OS === "web") {
-    const response = await fetch(clip.uri);
-    const blob = await response.blob();
-    const type = blob.type || clip.type;
-    const file = blob.type === type ? blob : new Blob([blob], { type });
-    body.append("audio", file, clip.name);
-    return body;
-  }
-  body.append("audio", {
-    uri: clip.uri,
-    name: clip.name,
-    type: clip.type,
-  } as unknown as Blob);
+  body.append("audio", file, clip.name);
   return body;
+}
+
+function sendAudioNative(accessToken: string, clip: SpeechClip): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const body = new FormData();
+    body.append("audio", {
+      uri: clip.uri,
+      name: clip.name,
+      type: clip.type,
+    } as unknown as Blob);
+    const request = new XMLHttpRequest();
+    request.open("POST", `${API_BASE_URL}/v1/chat/messages`);
+    request.setRequestHeader("Authorization", `Bearer ${accessToken}`);
+    request.onload = () => {
+      resolve(new Response(request.responseText, { status: request.status }));
+    };
+    request.onerror = () => {
+      reject(new ApiError(0, "network"));
+    };
+    request.send(body);
+  });
 }
 
 export function getTurn(accessToken: string, turnId: string): Promise<TurnView> {

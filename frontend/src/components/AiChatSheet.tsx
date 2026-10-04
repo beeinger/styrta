@@ -16,8 +16,8 @@ import {
   RecordingPresets,
   createAudioPlayer,
   setAudioModeAsync,
-  useAudioRecorder,
   type AudioPlayer,
+  type AudioRecorder,
 } from "expo-audio";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -102,7 +102,7 @@ export function AiChatSheet({
   const spokenTurns = useRef(new Set<string>());
   const announcedTranscripts = useRef(new Set<string>());
   const voiceLock = useRef(false);
-  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const recorderRef = useRef<AudioRecorder | null>(null);
   const [expanded, setExpanded] = useState(true);
   const [listening, setListening] = useState(false);
   const [sendingVoice, setSendingVoice] = useState(false);
@@ -398,11 +398,18 @@ export function AiChatSheet({
 
   useEffect(() => {
     return () => {
-      if (recorder.isRecording) {
-        void recorder.stop();
+      const recorder = recorderRef.current;
+      recorderRef.current = null;
+      if (!recorder) {
+        return;
+      }
+      try {
+        recorder.release();
+      } catch {
+        // Already released.
       }
     };
-  }, [recorder]);
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -472,9 +479,7 @@ export function AiChatSheet({
       setDraft("");
       setListening(false);
       setSendingVoice(false);
-      if (recorder.isRecording) {
-        void recorder.stop();
-      }
+      releaseRecorder();
       return;
     }
     const token = accessToken;
@@ -663,6 +668,29 @@ export function AiChatSheet({
     }
   }
 
+  function releaseRecorder() {
+    const recorder = recorderRef.current;
+    recorderRef.current = null;
+    if (!recorder) {
+      return;
+    }
+    try {
+      recorder.release();
+    } catch {
+      // Already released.
+    }
+  }
+
+  function ensureRecorder(): AudioRecorder {
+    const existing = recorderRef.current;
+    if (existing) {
+      return existing;
+    }
+    const created = createRecorder();
+    recorderRef.current = created;
+    return created;
+  }
+
   const onSpeak = () => {
     if (voiceLock.current || sendingVoice) {
       return;
@@ -671,6 +699,7 @@ export function AiChatSheet({
     if (!token) {
       return;
     }
+    const recorder = ensureRecorder();
     if (listening) {
       voiceLock.current = true;
       setListening(false);
@@ -678,8 +707,12 @@ export function AiChatSheet({
       void (async () => {
         try {
           const duration = recorder.getStatus().durationMillis;
-          await recorder.stop();
-          const uri = recorder.uri;
+          const stopped = (await recorder.stop()) as unknown as { url?: string | null };
+          const stoppedUrl = stopped?.url;
+          const uri =
+            typeof stoppedUrl === "string" && stoppedUrl.length > 0
+              ? stoppedUrl
+              : recorder.uri;
           if (!mountedRef.current || accessTokenRef.current !== token) {
             return;
           }
@@ -690,6 +723,9 @@ export function AiChatSheet({
           }
           await deliverAudio(token, speechClip(uri));
         } catch (error) {
+          if (recorderReleased(error)) {
+            recorderRef.current = null;
+          }
           if (!mountedRef.current) {
             return;
           }
@@ -723,8 +759,13 @@ export function AiChatSheet({
         }
         setListening(true);
         setChatError(null);
-        AccessibilityInfo.announceForAccessibility("Listening. Tap again to send.");
+        AccessibilityInfo.announceForAccessibility(
+          "Listening. Tap again to send, or cancel.",
+        );
       } catch (error) {
+        if (recorderReleased(error)) {
+          recorderRef.current = null;
+        }
         if (!mountedRef.current) {
           return;
         }
@@ -735,6 +776,29 @@ export function AiChatSheet({
         voiceLock.current = false;
       }
     })();
+  };
+
+  const cancelListening = () => {
+    if (voiceLock.current || sendingVoice || !listening) {
+      return;
+    }
+    voiceLock.current = true;
+    setListening(false);
+    const recorder = recorderRef.current;
+    void (async () => {
+      try {
+        if (recorder?.isRecording) {
+          await recorder.stop();
+        }
+      } catch (error) {
+        if (recorderReleased(error)) {
+          recorderRef.current = null;
+        }
+      } finally {
+        voiceLock.current = false;
+      }
+    })();
+    AccessibilityInfo.announceForAccessibility("Recording cancelled.");
   };
 
   const awaitingReply = messages.some((message) => message.pending);
@@ -910,40 +974,61 @@ export function AiChatSheet({
                   {THINKING_LINE}
                 </Text>
               ) : null}
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={
-                  sendingVoice ? "Sending" : listening ? "Tap to stop" : "Tap to speak"
-                }
-                accessibilityHint={
-                  listening
-                    ? "Stops listening and sends what you said."
-                    : "Starts listening. Tap again to send what you said."
-                }
-                accessibilityState={{
-                  selected: listening,
-                  busy: sendingVoice,
-                  disabled: sendingVoice,
-                }}
-                disabled={sendingVoice}
-                hitSlop={space.md}
-                onPress={onSpeak}
-                style={[
-                  styles.speak,
-                  listening && styles.speakListening,
-                  sendingVoice && styles.authButtonDisabled,
-                ]}
-              >
-                <SoundWave active={listening} />
-                <Text
-                  style={[styles.speakLabel, listening && styles.speakLabelListening]}
-                  maxFontSizeMultiplier={1.8}
-                  importantForAccessibility="no"
-                  accessibilityElementsHidden
+              <View style={styles.speakRow}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    sendingVoice ? "Sending" : listening ? "Tap to stop" : "Tap to speak"
+                  }
+                  accessibilityHint={
+                    listening
+                      ? "Stops listening and sends what you said."
+                      : "Starts listening. Tap again to send what you said."
+                  }
+                  accessibilityState={{
+                    selected: listening,
+                    busy: sendingVoice,
+                    disabled: sendingVoice,
+                  }}
+                  disabled={sendingVoice}
+                  hitSlop={space.md}
+                  onPress={onSpeak}
+                  style={[
+                    styles.speak,
+                    listening && styles.speakListening,
+                    sendingVoice && styles.authButtonDisabled,
+                  ]}
                 >
-                  {sendingVoice ? "Sending" : listening ? "Tap to stop" : "Tap to speak"}
-                </Text>
-              </Pressable>
+                  <SoundWave active={listening} />
+                  <Text
+                    style={[styles.speakLabel, listening && styles.speakLabelListening]}
+                    maxFontSizeMultiplier={1.8}
+                    importantForAccessibility="no"
+                    accessibilityElementsHidden
+                  >
+                    {sendingVoice ? "Sending" : listening ? "Tap to stop" : "Tap to speak"}
+                  </Text>
+                </Pressable>
+                {listening ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Cancel recording"
+                    accessibilityHint="Discards what you said without sending a message."
+                    hitSlop={space.md}
+                    onPress={cancelListening}
+                    style={styles.cancelSpeak}
+                  >
+                    <Text
+                      style={styles.cancelSpeakLabel}
+                      maxFontSizeMultiplier={1.8}
+                      importantForAccessibility="no"
+                      accessibilityElementsHidden
+                    >
+                      ✕
+                    </Text>
+                  </Pressable>
+                ) : null}
+              </View>
               <TextInput
                 value={draft}
                 onChangeText={setDraft}
@@ -1099,6 +1184,40 @@ function ChevronGlyph({ expanded }: { expanded: boolean }) {
   );
 }
 
+function createRecorder(): AudioRecorder {
+  const native = AudioModule as unknown as {
+    AudioRecorder?: new (options: object) => AudioRecorder;
+    AudioRecorderWeb?: new (options: object) => AudioRecorder;
+  };
+  const Factory = native.AudioRecorder ?? native.AudioRecorderWeb;
+  if (!Factory) {
+    throw new Error("Recording is not available.");
+  }
+  return new Factory(recordingOptions());
+}
+
+function recordingOptions() {
+  const preset = RecordingPresets.HIGH_QUALITY;
+  const common = {
+    extension: preset.extension,
+    sampleRate: preset.sampleRate,
+    numberOfChannels: preset.numberOfChannels,
+    bitRate: preset.bitRate,
+    isMeteringEnabled: false,
+  };
+  if (Platform.OS === "ios") {
+    return { ...common, ...preset.ios };
+  }
+  if (Platform.OS === "android") {
+    return { ...common, ...preset.android };
+  }
+  return { ...common, ...preset.web };
+}
+
+function recorderReleased(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("already released");
+}
+
 function audioSession(allowsRecording: boolean) {
   return {
     playsInSilentMode: true,
@@ -1234,12 +1353,30 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginBottom: space.sm,
   },
+  speakRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: space.md,
+    marginBottom: space.sm,
+  },
   speak: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: space.sm,
-    marginBottom: space.sm,
+  },
+  cancelSpeak: {
+    width: 44,
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cancelSpeakLabel: {
+    color: "#D70015",
+    fontFamily: fonts.semibold,
+    fontSize: 22,
+    lineHeight: 28,
   },
   speakListening: {},
   speakLabel: {
