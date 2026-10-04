@@ -1,4 +1,5 @@
-import { colors, space } from "../theme";
+import { usersIconSvg } from "../icons";
+import { colors } from "../theme";
 
 export type MapMarker = {
   id: string;
@@ -7,6 +8,7 @@ export type MapMarker = {
   title: string;
   emoji: string;
   hostName: string;
+  placeName: string;
   signedCount: number;
   capacity: number | null;
   startsAtLabel: string;
@@ -54,13 +56,13 @@ export function createMapHtml(options: MapDocumentOptions): string {
         width: 100%;
         margin: 0;
         padding: 0;
-        background: #f2f2f7;
+        background: ${colors.canvas};
       }
       #map {
         touch-action: none;
       }
       .leaflet-container {
-        background: #f2f2f7;
+        background: ${colors.canvas};
         font-family: Nunito, sans-serif;
       }
       .leaflet-bottom.leaflet-left {
@@ -85,7 +87,9 @@ export function createMapHtml(options: MapDocumentOptions): string {
         height: 48px;
         border-radius: 50%;
         background: ${colors.glass};
-        box-shadow: 0 8px 20px rgba(0,0,0,0.16);
+        box-shadow: 0 8px 20px rgba(28, 28, 30, 0.12);
+        border: 1px solid rgba(255, 255, 255, 0.9);
+        box-sizing: border-box;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -99,53 +103,74 @@ export function createMapHtml(options: MapDocumentOptions): string {
         display: none;
         position: absolute;
         left: 50%;
-        bottom: calc(100% + ${space.sm}px);
+        bottom: calc(100% + 10px);
         transform: translateX(-50%);
         width: max-content;
-        max-width: 200px;
-        background: ${colors.glass};
-        border-radius: ${space.lg}px;
-        padding: ${space.md}px ${space.lg}px;
-        box-shadow: 0 8px 20px rgba(0,0,0,0.16);
-        text-align: center;
-        pointer-events: none;
+        min-width: 168px;
+        max-width: 228px;
+        background: ${colors.white};
+        border-radius: 16px;
+        padding: 12px 14px 11px;
+        box-shadow:
+          0 12px 28px rgba(28, 28, 30, 0.14),
+          0 0 0 1px rgba(28, 28, 30, 0.06);
+        text-align: left;
+        pointer-events: auto;
+      }
+      .event-card::after {
+        content: "";
+        position: absolute;
+        left: 50%;
+        bottom: -5px;
+        width: 10px;
+        height: 10px;
+        background: ${colors.white};
+        border-right: 1px solid rgba(28, 28, 30, 0.06);
+        border-bottom: 1px solid rgba(28, 28, 30, 0.06);
+        transform: translateX(-50%) rotate(45deg);
       }
       .event-marker.is-selected .event-card {
         display: block;
       }
-      .event-host,
       .event-title,
       .event-time,
-      .event-count {
+      .event-place {
         margin: 0;
         overflow-wrap: anywhere;
       }
-      .event-host {
-        color: ${colors.inkMuted};
-        font-size: 13px;
-        font-weight: 400;
-        line-height: 18px;
-      }
       .event-title {
-        margin-top: ${space.xs}px;
-        color: ${colors.ink};
-        font-size: 16px;
-        font-weight: 600;
-        line-height: 22px;
-      }
-      .event-time {
-        margin-top: ${space.xs}px;
-        color: ${colors.inkMuted};
-        font-size: 13px;
-        font-weight: 400;
-        line-height: 18px;
-      }
-      .event-count {
-        margin-top: ${space.xs}px;
         color: ${colors.ink};
         font-size: 15px;
         font-weight: 600;
         line-height: 20px;
+      }
+      .event-time,
+      .event-place {
+        margin-top: 4px;
+        color: ${colors.inkMuted};
+        font-size: 13px;
+        font-weight: 400;
+        line-height: 18px;
+      }
+      .event-place {
+        color: ${colors.ink};
+      }
+      .event-count {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin: 8px 0 0;
+        color: ${colors.ink};
+        font-size: 13px;
+        font-weight: 600;
+        line-height: 18px;
+      }
+      .event-count span {
+        display: flex;
+        flex: none;
+      }
+      .event-count svg {
+        display: block;
       }
       .user-location {
         position: absolute;
@@ -166,6 +191,7 @@ export function createMapHtml(options: MapDocumentOptions): string {
     <div id="map"></div>
     <script>
       const INITIAL = ${config};
+      const USERS_ICON = ${JSON.stringify(usersIconSvg(colors.ink, 15))};
 
       function post(message) {
         if (window.ReactNativeWebView) {
@@ -273,12 +299,12 @@ export function createMapHtml(options: MapDocumentOptions): string {
         }
 
         function markerLabel(item) {
+          const place = item.placeName ? ", " + item.placeName : "";
           return (
             item.title +
             ", " +
             item.startsAtLabel +
-            ", hosted by " +
-            item.hostName +
+            place +
             ", " +
             peopleText(item)
           );
@@ -332,10 +358,6 @@ export function createMapHtml(options: MapDocumentOptions): string {
             card.className = "event-card";
             card.setAttribute("aria-hidden", "true");
 
-            const host = document.createElement("p");
-            host.className = "event-host";
-            host.textContent = item.hostName;
-
             const title = document.createElement("p");
             title.className = "event-title";
             title.textContent = item.title;
@@ -344,11 +366,23 @@ export function createMapHtml(options: MapDocumentOptions): string {
             time.className = "event-time";
             time.textContent = item.startsAtLabel;
 
+            card.append(title, time);
+
+            if (item.placeName) {
+              const place = document.createElement("p");
+              place.className = "event-place";
+              place.textContent = item.placeName;
+              card.append(place);
+            }
+
             const count = document.createElement("p");
             count.className = "event-count";
-            count.textContent = countText(item);
-
-            card.append(host, title, time, count);
+            const countIcon = document.createElement("span");
+            countIcon.innerHTML = USERS_ICON;
+            const countLabel = document.createElement("span");
+            countLabel.textContent = countText(item);
+            count.append(countIcon, countLabel);
+            card.append(count);
 
             const bubble = document.createElement("div");
             bubble.className = "event-bubble";
@@ -380,8 +414,16 @@ export function createMapHtml(options: MapDocumentOptions): string {
               element.setAttribute("aria-label", label);
               element.setAttribute("aria-expanded", selected ? "true" : "false");
             });
-            marker.on("click", () => {
+            marker.on("click", (event) => {
               suppressMapClick = true;
+              const target = event.originalEvent && event.originalEvent.target;
+              if (
+                target &&
+                typeof target.closest === "function" &&
+                target.closest(".event-card")
+              ) {
+                return;
+              }
               post({ type: "marker-press", id: item.id });
             });
             marker.addTo(markerLayer);

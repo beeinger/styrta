@@ -16,6 +16,7 @@ import {
   type MeetupEvent,
 } from "../data/events";
 import { isHostedEvent } from "../data/session";
+import { Icon, type IconName } from "../icons";
 import { colors, fonts, glassShadow, space } from "../theme";
 
 type AttendingBubblesProps = {
@@ -133,14 +134,7 @@ export function AttendingBubbles({
               pressed && styles.bubblePressed,
             ]}
           >
-            <Text
-              style={styles.closeGlyph}
-              maxFontSizeMultiplier={1.6}
-              importantForAccessibility="no"
-              accessibilityElementsHidden
-            >
-              ×
-            </Text>
+            <Icon name="close" size={20} color={colors.ink} />
           </Pressable>
           <ScrollView
             style={styles.list}
@@ -210,47 +204,60 @@ type EventRowProps = {
 function EventRow({ event, onFocus, onHide }: EventRowProps) {
   const when = formatEventStart(event.startsAt);
   const attendance = describeAttendance(event.signedCount, event.capacity);
+  const place = event.placeName?.trim() ?? "";
   const hosting = event.hostedByMe === true || isHostedEvent(event.id);
   const role = hosting ? "You are hosting" : "You are attending";
+  const summary = [event.title, when, place, attendance].filter(Boolean).join(", ");
   return (
-    <View style={styles.row}>
+    <View style={styles.card}>
       <View
-        style={[
-          styles.emojiCircle,
-          { backgroundColor: hosting ? colors.primary : colors.secondary },
-        ]}
+        accessible
+        accessibilityLabel={`${summary}. ${role}`}
+        style={styles.cardMain}
       >
-        <Text
-          style={styles.emoji}
-          maxFontSizeMultiplier={1.6}
-          importantForAccessibility="no"
-          accessibilityElementsHidden
-        >
-          {event.emoji}
-        </Text>
-      </View>
-      <View style={styles.pill}>
         <View
-          accessible
-          accessibilityLabel={`${event.hostName}, ${event.title}, ${when}, ${attendance}. ${role}`}
-          style={styles.details}
+          style={[
+            styles.emojiCircle,
+            { backgroundColor: hosting ? colors.primary : colors.secondary },
+          ]}
         >
-          <Text style={styles.host}>{event.hostName}</Text>
-          <Text style={styles.title}>{event.title}</Text>
-          <Text style={styles.time}>{when}</Text>
-          <Text style={styles.count}>
-            {formatAttendance(event.signedCount, event.capacity)}
+          <Text
+            style={styles.emoji}
+            maxFontSizeMultiplier={1.6}
+            importantForAccessibility="no"
+            accessibilityElementsHidden
+          >
+            {event.emoji}
           </Text>
         </View>
-        <View style={styles.actions}>
-          <RowButton
-            label={`Show ${event.title} on the map`}
-            glyph="📍"
-            onPress={onFocus}
-          />
-          <RowButton label={`Hide ${event.title}`} glyph="✓" onPress={onHide} />
-          <RowButton label={`Remove ${event.title}`} glyph="✕" onPress={onHide} />
+        <View style={styles.details}>
+          <Text style={styles.title} numberOfLines={2}>
+            {event.title}
+          </Text>
+          <Text style={styles.meta} numberOfLines={1}>
+            {when}
+          </Text>
+          {place ? (
+            <Text style={styles.meta} numberOfLines={2}>
+              {place}
+            </Text>
+          ) : null}
+          <View style={styles.people}>
+            <Icon name="users" size={15} color={colors.ink} />
+            <Text style={styles.count}>
+              {formatAttendance(event.signedCount, event.capacity)}
+            </Text>
+          </View>
         </View>
+      </View>
+      <View style={styles.actions}>
+        <RowButton
+          label={`Show ${event.title} on the map`}
+          name="pin"
+          onPress={onFocus}
+        />
+        <RowButton label={`Hide ${event.title}`} name="check" onPress={onHide} />
+        <RowButton label={`Remove ${event.title}`} name="close" onPress={onHide} />
       </View>
     </View>
   );
@@ -258,31 +265,19 @@ function EventRow({ event, onFocus, onHide }: EventRowProps) {
 
 type RowButtonProps = {
   label: string;
-  glyph: string;
+  name: IconName;
   onPress: () => void;
 };
 
-function RowButton({ label, glyph, onPress }: RowButtonProps) {
+function RowButton({ label, name, onPress }: RowButtonProps) {
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
       onPress={onPress}
-      style={styles.rowButton}
+      style={({ pressed }) => [styles.rowButton, pressed && styles.rowButtonPressed]}
     >
-      {({ pressed }) => (
-        <>
-          {pressed ? <View style={styles.rowButtonPressed} /> : null}
-          <Text
-            style={styles.rowGlyph}
-            maxFontSizeMultiplier={1.4}
-            importantForAccessibility="no"
-            accessibilityElementsHidden
-          >
-            {glyph}
-          </Text>
-        </>
-      )}
+      <Icon name={name} size={18} color={colors.ink} />
     </Pressable>
   );
 }
@@ -293,14 +288,13 @@ const styles = StyleSheet.create({
   },
   stack: {
     alignSelf: "flex-start",
-    marginTop: "10%",
+    marginTop: space.xl,
   },
   expanded: {
     flex: 1,
     minHeight: 0,
-    paddingTop: "10%",
-    gap: space.sm,
-    justifyContent: "flex-start",
+    paddingTop: space.lg,
+    gap: space.md,
   },
   bubble: {
     width: 48,
@@ -321,15 +315,8 @@ const styles = StyleSheet.create({
     backgroundColor: colors.glassSelected,
   },
   emoji: {
-    fontSize: 24,
-    lineHeight: 30,
-    textAlign: "center",
-  },
-  closeGlyph: {
-    color: colors.ink,
-    fontFamily: fonts.semibold,
-    fontSize: 28,
-    lineHeight: 32,
+    fontSize: 22,
+    lineHeight: 28,
     textAlign: "center",
   },
   list: {
@@ -339,95 +326,73 @@ const styles = StyleSheet.create({
   },
   listContent: {
     gap: space.sm,
-    paddingVertical: space.xs,
+    paddingBottom: space.sm,
     width: "100%",
   },
-  row: {
+  card: {
     alignSelf: "stretch",
+    backgroundColor: colors.white,
+    borderRadius: 20,
+    padding: space.md,
+    gap: space.md,
+    ...glassShadow,
+  },
+  cardMain: {
     flexDirection: "row",
-    alignItems: "center",
-    gap: space.sm,
-    maxWidth: "100%",
+    alignItems: "flex-start",
+    gap: space.md,
   },
   emojiCircle: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     alignItems: "center",
     justifyContent: "center",
-    ...glassShadow,
-  },
-  pill: {
-    flex: 1,
-    flexShrink: 1,
-    minWidth: 0,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: space.sm,
-    overflow: "hidden",
-    backgroundColor: colors.glass,
-    borderRadius: 28,
-    paddingVertical: space.md,
-    paddingHorizontal: space.lg,
-    ...glassShadow,
   },
   details: {
     flex: 1,
-    flexShrink: 1,
     minWidth: 0,
-    gap: space.xs,
-  },
-  host: {
-    color: colors.inkMuted,
-    fontFamily: fonts.regular,
-    fontSize: 13,
-    lineHeight: 18,
-    flexShrink: 1,
+    gap: 2,
   },
   title: {
     color: colors.ink,
     fontFamily: fonts.semibold,
     fontSize: 16,
-    lineHeight: 22,
-    flexShrink: 1,
+    lineHeight: 21,
   },
-  time: {
+  meta: {
     color: colors.inkMuted,
     fontFamily: fonts.regular,
     fontSize: 13,
     lineHeight: 18,
-    flexShrink: 1,
+  },
+  people: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 4,
   },
   count: {
     color: colors.ink,
     fontFamily: fonts.semibold,
-    fontSize: 15,
-    lineHeight: 20,
-    flexShrink: 1,
+    fontSize: 14,
+    lineHeight: 18,
   },
   actions: {
     flexDirection: "row",
+    justifyContent: "flex-end",
     alignItems: "center",
-    flexShrink: 0,
-    gap: space.xs,
+    gap: space.sm,
   },
   rowButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: colors.quaternaryWash,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: colors.canvas,
     alignItems: "center",
     justifyContent: "center",
-    overflow: "hidden",
   },
   rowButtonPressed: {
-    ...StyleSheet.absoluteFill,
-    backgroundColor: colors.quaternary,
-    opacity: 0.24,
-  },
-  rowGlyph: {
-    fontSize: 20,
-    lineHeight: 26,
-    textAlign: "center",
+    backgroundColor: colors.secondary,
   },
 });

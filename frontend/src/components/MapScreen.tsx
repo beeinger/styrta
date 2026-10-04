@@ -20,7 +20,7 @@ import { getMyEvents, getNearbyEvents, signIn as requestSignIn, signUp as reques
 import { ApiError, type MyEvent, type NearbyEvent, type Session } from "../api/types";
 import { describeAttendance, formatEventStart, type MeetupEvent } from "../data/events";
 import { demoLocation } from "../demoLocation";
-import { chatCornerRadius, space } from "../theme";
+import { chatCornerRadius, colors, fonts, space } from "../theme";
 import { AiChatSheet } from "./AiChatSheet";
 import { AttendingBubbles } from "./AttendingBubbles";
 import { createMapHtml, type MapMarker, type MapPadding } from "./mapDocument";
@@ -107,6 +107,7 @@ export function MapScreen() {
   const authLock = useRef(false);
   const sessionRef = useRef<Session | null>(null);
   const markersRef = useRef<MapMarker[]>([]);
+  const selectedIdRef = useRef<string | null>(null);
   const nearbyQueryRef = useRef<NearbyQuery>({
     lat: ARENA_CAMERA.latitude,
     lng: ARENA_CAMERA.longitude,
@@ -114,6 +115,7 @@ export function MapScreen() {
   });
   mapReadyRef.current = mapReady;
   markersRef.current = markers;
+  selectedIdRef.current = selectedMarker?.id ?? null;
   sessionRef.current = session;
   const nearbyQuery = nearbyQueryFor(viewport, userLocation);
   const nearbyKey = nearbyKeyFor(viewport, userLocation);
@@ -519,12 +521,18 @@ export function MapScreen() {
       if (!marker) {
         return;
       }
+      if (selectedIdRef.current === marker.id) {
+        setSelectedMarker(null);
+        AccessibilityInfo.announceForAccessibility("Details closed");
+        return;
+      }
       setSelectedMarker(marker);
       run(
         `window.__styrtaMap.centerOn(${marker.latitude}, ${marker.longitude}, ${reduceMotion ? "false" : "true"})`,
       );
+      const place = marker.placeName ? `, ${marker.placeName}` : "";
       AccessibilityInfo.announceForAccessibility(
-        `${marker.title}, ${marker.startsAtLabel}, hosted by ${marker.hostName}, ${describeAttendance(marker.signedCount, marker.capacity)}`,
+        `${marker.title}, ${marker.startsAtLabel}${place}, ${describeAttendance(marker.signedCount, marker.capacity)}`,
       );
       return;
     }
@@ -677,9 +685,9 @@ export function MapScreen() {
         concealed={chatCoversEvents}
         onExpandedChange={setEventsOpen}
         top={insets.top + space.md}
-        bottom={mapBottom + space.sm}
-        start={Math.max(space.sm * 2, startInset) / 2}
-        end={space.sm}
+        bottom={mapBottom + (eventsOpen ? 72 : space.sm)}
+        start={Math.max(space.lg, startInset)}
+        end={eventsOpen ? 72 : space.lg}
         onFocusEvent={focusEvent}
       />
     </View>
@@ -784,6 +792,7 @@ function myEventToMeetup(event: MyEvent, userId: string): MeetupEvent {
     latitude: event.latitude,
     longitude: event.longitude,
     hostName: event.host_name,
+    placeName: event.place_name,
     startsAt: event.starts_at,
     hostedByMe: event.host_id === userId,
   };
@@ -797,6 +806,7 @@ function nearbyToMarker(event: NearbyEvent): MapMarker {
     title: event.title,
     emoji: event.emoji,
     hostName: event.host_name,
+    placeName: event.place_name,
     signedCount: event.signed_count,
     capacity: event.capacity,
     startsAtLabel: formatEventStart(event.starts_at),
@@ -832,7 +842,7 @@ function isUnauthorized(error: unknown): boolean {
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: "#F2F2F7",
+    backgroundColor: colors.canvas,
   },
   mapOverlay: {
     position: "absolute",
@@ -842,19 +852,20 @@ const styles = StyleSheet.create({
   },
   map: {
     ...StyleSheet.absoluteFill,
-    backgroundColor: "#F2F2F7",
+    backgroundColor: colors.canvas,
   },
   status: {
     ...StyleSheet.absoluteFill,
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 32,
-    backgroundColor: "#F2F2F7",
+    backgroundColor: colors.canvas,
   },
   statusText: {
-    color: "#1C1C1E",
-    fontSize: 18,
-    lineHeight: 26,
+    color: colors.ink,
+    fontFamily: fonts.regular,
+    fontSize: 16,
+    lineHeight: 22,
     textAlign: "center",
   },
 });

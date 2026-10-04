@@ -11,6 +11,7 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
 import {
   AudioModule,
   RecordingPresets,
@@ -33,6 +34,7 @@ import {
   type SpeechClip,
 } from "../api/client";
 import { ApiError, type ChatStreamEvent, type HistoryMessage } from "../api/types";
+import { Icon } from "../icons";
 import { chatCornerRadius, colors, fonts, space } from "../theme";
 
 type AiChatSheetProps = {
@@ -123,6 +125,7 @@ export function AiChatSheet({
   const [chatError, setChatError] = useState<string | null>(null);
   const [keyboardInset, setKeyboardInset] = useState(0);
   const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const [composerPad, setComposerPad] = useState(148);
   const [reduceMotion, setReduceMotion] = useState(false);
   const signedIn = accessToken != null;
 
@@ -833,6 +836,21 @@ export function AiChatSheet({
   };
 
   const awaitingReply = messages.some((message) => message.pending);
+  const overlayChat = expanded && signedIn;
+  const conversation =
+    messages.length === 0 ? (
+      historyReady ? (
+        <ChatBubble
+          message={{
+            id: "welcome",
+            role: "assistant",
+            text: welcomeLine(userNick),
+          }}
+        />
+      ) : null
+    ) : (
+      messages.map((message) => <ChatBubble key={message.id} message={message} />)
+    );
   const submitAuth = () => {
     const email = authEmail.trim();
     const password = authPassword;
@@ -903,8 +921,9 @@ export function AiChatSheet({
         }}
         style={[
           styles.card,
-          expanded && signedIn ? { height: panelHeight } : null,
-          { paddingBottom: bottomInset },
+          overlayChat
+            ? { height: panelHeight, paddingBottom: 0 }
+            : { paddingBottom: bottomInset },
         ]}
       >
         {signedIn ? (
@@ -927,18 +946,15 @@ export function AiChatSheet({
               onPress={toggleVoice}
               hitSlop={4}
               style={({ pressed }) => [
-                styles.chevronButton,
-                pressed && styles.pressed,
+                styles.iconButton,
+                pressed && styles.iconButtonPressed,
               ]}
             >
-              <Text
-                style={styles.voiceEmoji}
-                maxFontSizeMultiplier={1.8}
-                importantForAccessibility="no"
-                accessibilityElementsHidden
-              >
-                {voiceMuted ? "🔇" : "🔊"}
-              </Text>
+              <Icon
+                name={voiceMuted ? "volumeOff" : "volume"}
+                size={20}
+                color={colors.ink}
+              />
             </Pressable>
             <Pressable
               ref={toggleRef}
@@ -953,45 +969,49 @@ export function AiChatSheet({
               onPress={toggleExpanded}
               hitSlop={4}
               style={({ pressed }) => [
-                styles.chevronButton,
-                pressed && styles.pressed,
+                styles.iconButton,
+                pressed && styles.iconButtonPressed,
               ]}
             >
-              <ChevronGlyph expanded={expanded} />
+              <Icon
+                name={expanded ? "chevronDown" : "chevronUp"}
+                size={22}
+                color={colors.ink}
+              />
             </Pressable>
           </View>
         ) : null}
-        {expanded && signedIn ? (
-          <ScrollView
-            ref={transcriptRef}
-            style={styles.transcript}
-            contentContainerStyle={styles.transcriptContent}
-            keyboardShouldPersistTaps="handled"
-            keyboardDismissMode="interactive"
-            accessibilityLabel="Conversation"
-          >
-            {messages.length === 0 ? (
-              historyReady ? (
-                <ChatBubble
-                  message={{
-                    id: "welcome",
-                    role: "assistant",
-                    text: welcomeLine(userNick),
-                  }}
-                />
-              ) : null
-            ) : (
-              messages.map((message) => (
-                <ChatBubble key={message.id} message={message} />
-              ))
-            )}
-          </ScrollView>
+        {overlayChat ? (
+          <View style={styles.transcriptFrame}>
+            <ScrollView
+              ref={transcriptRef}
+              style={styles.transcript}
+              contentContainerStyle={[
+                styles.transcriptContent,
+                { paddingBottom: composerPad + space.sm },
+              ]}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="interactive"
+              accessibilityLabel="Conversation"
+            >
+              {conversation}
+            </ScrollView>
+            <LinearGradient
+              pointerEvents="none"
+              colors={[colors.tertiaryWash, colors.tertiaryWash, colors.tertiaryWashFade]}
+              locations={[0, 0.42, 1]}
+              style={styles.transcriptFade}
+            />
+          </View>
         ) : null}
         <View
           onLayout={(event) => {
-            composerHeight.current = event.nativeEvent.layout.height;
-            publishMapClearance(headerHeight.current, composerHeight.current);
+            const height = event.nativeEvent.layout.height;
+            composerHeight.current = height;
+            setComposerPad(height);
+            publishMapClearance(headerHeight.current, height);
           }}
+          style={overlayChat ? [styles.composer, { paddingBottom: bottomInset }] : styles.composerFlow}
         >
           {signedIn ? (
             <>
@@ -1045,18 +1065,11 @@ export function AiChatSheet({
                     accessibilityRole="button"
                     accessibilityLabel="Cancel recording"
                     accessibilityHint="Discards what you said without sending a message."
-                    hitSlop={space.md}
+                    hitSlop={space.sm}
                     onPress={cancelListening}
                     style={styles.cancelSpeak}
                   >
-                    <Text
-                      style={styles.cancelSpeakLabel}
-                      maxFontSizeMultiplier={1.8}
-                      importantForAccessibility="no"
-                      accessibilityElementsHidden
-                    >
-                      ✕
-                    </Text>
+                    <Icon name="close" size={18} color={colors.ink} />
                   </Pressable>
                 ) : null}
               </View>
@@ -1071,48 +1084,69 @@ export function AiChatSheet({
                 submitBehavior="submit"
                 accessibilityLabel="Message"
                 accessibilityHint="Sends your message. The conversation is kept when the chat is minimized."
-                style={styles.input}
+                style={[styles.input, styles.messageInput]}
                 maxFontSizeMultiplier={2}
               />
             </>
           ) : (
-            <View style={styles.authActions}>
+            <ScrollView
+              keyboardShouldPersistTaps="handled"
+              bounces={false}
+              style={{ maxHeight: Math.max(280, windowHeight - keyboardInset - 24) }}
+              contentContainerStyle={styles.authActions}
+            >
+              <View style={styles.authIntro}>
+                <Text style={styles.brand} accessibilityRole="header">
+                  Styrta
+                </Text>
+                <Text style={styles.authLead}>
+                  {authMode === "sign-up" ? "Załóż konto" : "Zaloguj się"}
+                </Text>
+              </View>
               {authError || formError ? (
                 <Text style={styles.errorText} accessibilityRole="alert">
                   {formError ?? authError}
                 </Text>
               ) : null}
-              <Text style={styles.fieldLabel}>email</Text>
-              <TextInput
-                value={authEmail}
-                onChangeText={setAuthEmail}
-                editable={!authBusy}
-                autoCapitalize="none"
-                autoCorrect={false}
-                autoComplete="email"
-                keyboardType="email-address"
-                textContentType="emailAddress"
-                accessibilityLabel="email"
-                style={styles.input}
-                maxFontSizeMultiplier={2}
-              />
-              <Text style={styles.fieldLabel}>hasło</Text>
-              <TextInput
-                value={authPassword}
-                onChangeText={setAuthPassword}
-                editable={!authBusy}
-                secureTextEntry
-                autoCapitalize="none"
-                autoCorrect={false}
-                autoComplete={authMode === "sign-up" ? "new-password" : "password"}
-                textContentType={authMode === "sign-up" ? "newPassword" : "password"}
-                accessibilityLabel="hasło"
-                style={styles.input}
-                maxFontSizeMultiplier={2}
-              />
+              <View style={styles.authField}>
+                <Text style={styles.fieldLabel}>Email</Text>
+                <TextInput
+                  value={authEmail}
+                  onChangeText={setAuthEmail}
+                  editable={!authBusy}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  autoComplete="email"
+                  keyboardType="email-address"
+                  textContentType="emailAddress"
+                  accessibilityLabel="Email"
+                  placeholder="you@example.com"
+                  placeholderTextColor={colors.inkMuted}
+                  style={styles.input}
+                  maxFontSizeMultiplier={2}
+                />
+              </View>
+              <View style={styles.authField}>
+                <Text style={styles.fieldLabel}>Hasło</Text>
+                <TextInput
+                  value={authPassword}
+                  onChangeText={setAuthPassword}
+                  editable={!authBusy}
+                  secureTextEntry
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  autoComplete={authMode === "sign-up" ? "new-password" : "password"}
+                  textContentType={authMode === "sign-up" ? "newPassword" : "password"}
+                  accessibilityLabel="Hasło"
+                  placeholder="••••••••"
+                  placeholderTextColor={colors.inkMuted}
+                  style={styles.input}
+                  maxFontSizeMultiplier={2}
+                />
+              </View>
               {authMode === "sign-up" ? (
-                <>
-                  <Text style={styles.fieldLabel}>powtórz hasło</Text>
+                <View style={styles.authField}>
+                  <Text style={styles.fieldLabel}>Powtórz hasło</Text>
                   <TextInput
                     value={authPasswordAgain}
                     onChangeText={setAuthPasswordAgain}
@@ -1122,11 +1156,13 @@ export function AiChatSheet({
                     autoCorrect={false}
                     autoComplete="new-password"
                     textContentType="newPassword"
-                    accessibilityLabel="powtórz hasło"
+                    accessibilityLabel="Powtórz hasło"
+                    placeholder="••••••••"
+                    placeholderTextColor={colors.inkMuted}
                     style={styles.input}
                     maxFontSizeMultiplier={2}
                   />
-                </>
+                </View>
               ) : null}
               <Pressable
                 accessibilityRole="button"
@@ -1137,7 +1173,7 @@ export function AiChatSheet({
                 style={({ pressed }) => [
                   styles.authButton,
                   authBusy && styles.authButtonDisabled,
-                  pressed && !authBusy && styles.pressed,
+                  pressed && !authBusy && styles.authButtonPressed,
                 ]}
               >
                 <Text
@@ -1171,7 +1207,7 @@ export function AiChatSheet({
                     : "Need an account? Sign up"}
                 </Text>
               </Pressable>
-            </View>
+            </ScrollView>
           )}
         </View>
       </View>
@@ -1227,8 +1263,6 @@ function ChatBubble({ message }: { message: ChatMessage }) {
       ? `Assistant said: ${message.text}`
       : `You said: ${message.text}`;
 
-  const sheetFill = assistant ? colors.white : colors.quaternary;
-
   return (
     <View
       accessibilityLiveRegion={message.pending ? "polite" : undefined}
@@ -1237,7 +1271,6 @@ function ChatBubble({ message }: { message: ChatMessage }) {
       <Text
         style={[
           styles.bubbleText,
-          !message.pending && styles.bubbleTextBesideCopy,
           assistant && styles.assistantText,
           message.pending && styles.pendingText,
         ]}
@@ -1277,11 +1310,9 @@ function ChatBubble({ message }: { message: ChatMessage }) {
           accessibilityHint="Copies this message."
           onPress={() => void copyMessage()}
           hitSlop={space.sm}
-          style={({ pressed }) => [styles.copyButton, pressed && styles.pressed]}
+          style={({ pressed }) => [styles.copyButton, pressed && styles.copyPressed]}
         >
-          {({ pressed }) => (
-            <CopyGlyph copied={copied} fill={pressed ? colors.line : sheetFill} />
-          )}
+          <Icon name={copied ? "check" : "copy"} size={13} color={colors.ink} />
         </Pressable>
       )}
     </View>
@@ -1395,37 +1426,6 @@ function delay(milliseconds: number): Promise<void> {
   });
 }
 
-function CopyGlyph({ copied, fill }: { copied: boolean; fill: string }) {
-  return (
-    <View
-      pointerEvents="none"
-      importantForAccessibility="no"
-      accessibilityElementsHidden
-      style={styles.copyIcon}
-    >
-      {copied ? (
-        <View style={styles.copiedMark} />
-      ) : (
-        <>
-          <View style={styles.copySheetBack} />
-          <View style={[styles.copySheetFront, { backgroundColor: fill }]} />
-        </>
-      )}
-    </View>
-  );
-}
-
-function ChevronGlyph({ expanded }: { expanded: boolean }) {
-  return (
-    <View
-      pointerEvents="none"
-      importantForAccessibility="no"
-      accessibilityElementsHidden
-      style={[styles.chevron, expanded ? styles.chevronDown : styles.chevronUp]}
-    />
-  );
-}
-
 function createRecorder(): AudioRecorder {
   const native = AudioModule as unknown as {
     AudioRecorder?: new (options: object) => AudioRecorder;
@@ -1505,82 +1505,91 @@ const styles = StyleSheet.create({
     backgroundColor: colors.tertiaryWash,
     borderTopLeftRadius: chatCornerRadius,
     borderTopRightRadius: chatCornerRadius,
-    borderWidth: 0,
-    paddingHorizontal: space.lg,
+    overflow: "hidden",
     paddingTop: CARD_PADDING_TOP,
     elevation: 8,
-    shadowColor: "#000000",
-    shadowOffset: { width: 0, height: -8 },
-    shadowOpacity: 0.16,
-    shadowRadius: 20,
+    shadowColor: "#1C1C1E",
+    shadowOffset: { width: 0, height: -6 },
+    shadowOpacity: 0.12,
+    shadowRadius: 18,
   },
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
+    paddingHorizontal: space.sm,
+    zIndex: 3,
   },
-  voiceEmoji: {
-    fontSize: 22,
-    lineHeight: 28,
-  },
-  chevronButton: {
-    width: 44,
-    height: 44,
+  iconButton: {
+    width: 40,
+    height: 40,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 22,
+    borderRadius: 20,
+    backgroundColor: "rgba(255, 255, 255, 0.72)",
   },
-  chevron: {
-    width: 12,
-    height: 12,
-    borderBottomWidth: 2.5,
-    borderRightWidth: 2.5,
-    borderColor: colors.ink,
+  iconButtonPressed: {
+    backgroundColor: colors.white,
   },
-  chevronUp: {
-    transform: [{ translateY: 3 }, { rotate: "-135deg" }],
-  },
-  chevronDown: {
-    transform: [{ translateY: -2 }, { rotate: "45deg" }],
+  transcriptFrame: {
+    flex: 1,
+    minHeight: 0,
   },
   transcript: {
     flex: 1,
+  },
+  transcriptFade: {
+    position: "absolute",
+    top: 0,
+    start: 0,
+    end: 0,
+    height: 56,
+    zIndex: 2,
   },
   transcriptContent: {
     flexGrow: 1,
     justifyContent: "flex-end",
     gap: space.sm,
-    paddingBottom: space.md,
+    paddingTop: space.sm,
+    paddingHorizontal: space.lg,
+  },
+  composer: {
+    position: "absolute",
+    start: 0,
+    end: 0,
+    bottom: 0,
+    zIndex: 3,
+    gap: space.sm,
+    paddingTop: space.sm,
+    paddingHorizontal: space.lg,
+    backgroundColor: colors.tertiaryWash,
+  },
+  composerFlow: {
+    gap: space.sm,
+    paddingTop: space.sm,
+    paddingHorizontal: space.lg,
   },
   bubble: {
     alignSelf: "flex-end",
-    maxWidth: "85%",
+    maxWidth: "86%",
     backgroundColor: colors.quaternary,
-    borderRadius: 16,
-    paddingHorizontal: space.md,
-    paddingVertical: space.md,
+    borderRadius: 18,
+    paddingTop: 10,
+    paddingBottom: 10,
+    paddingHorizontal: 12,
   },
   assistantBubble: {
     alignSelf: "flex-start",
     backgroundColor: colors.white,
-    borderWidth: 1,
-    borderColor: colors.line,
   },
   bubbleWithCopy: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    paddingTop: space.xs,
-    paddingEnd: space.xs,
+    paddingBottom: 20,
   },
   bubbleText: {
     color: colors.ink,
     fontFamily: fonts.regular,
     fontSize: 16,
     lineHeight: 22,
-  },
-  bubbleTextBesideCopy: {
-    flexShrink: 1,
-    paddingTop: space.sm,
   },
   assistantText: {
     color: colors.ink,
@@ -1595,45 +1604,16 @@ const styles = StyleSheet.create({
     textDecorationLine: "underline",
   },
   copyButton: {
-    width: 44,
-    height: 44,
+    position: "absolute",
+    end: 4,
+    bottom: 2,
+    width: 18,
+    height: 18,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 22,
   },
-  copyIcon: {
-    width: 16,
-    height: 16,
-  },
-  copySheetBack: {
-    position: "absolute",
-    top: 0,
-    start: 0,
-    width: 11,
-    height: 11,
-    borderWidth: 1.5,
-    borderColor: colors.ink,
-    borderRadius: 2,
-  },
-  copySheetFront: {
-    position: "absolute",
-    top: 4,
-    start: 4,
-    width: 11,
-    height: 11,
-    borderWidth: 1.5,
-    borderColor: colors.ink,
-    borderRadius: 2,
-  },
-  copiedMark: {
-    width: 6,
-    height: 11,
-    marginTop: 1,
-    marginStart: 5,
-    borderBottomWidth: 2,
-    borderRightWidth: 2,
-    borderColor: colors.ink,
-    transform: [{ rotate: "40deg" }],
+  copyPressed: {
+    opacity: 0.45,
   },
   pendingStatus: {
     color: colors.inkMuted,
@@ -1642,34 +1622,34 @@ const styles = StyleSheet.create({
     fontStyle: "italic",
     lineHeight: 22,
     textAlign: "center",
-    marginBottom: space.sm,
   },
   speakRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: space.md,
-    marginBottom: space.sm,
+    gap: space.sm,
   },
   speak: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: space.sm,
+    minHeight: 40,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    backgroundColor: colors.white,
   },
   cancelSpeak: {
-    width: 44,
-    height: 44,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor: colors.white,
   },
-  cancelSpeakLabel: {
-    color: "#D70015",
-    fontFamily: fonts.semibold,
-    fontSize: 22,
-    lineHeight: 28,
+  speakListening: {
+    backgroundColor: colors.secondary,
   },
-  speakListening: {},
   speakLabel: {
     color: colors.primaryStrong,
     fontFamily: fonts.semibold,
@@ -1697,64 +1677,90 @@ const styles = StyleSheet.create({
   input: {
     minHeight: 48,
     backgroundColor: colors.white,
-    borderRadius: 999,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: colors.lineStrong,
     paddingHorizontal: space.lg,
-    paddingVertical: space.md,
+    paddingVertical: 12,
     color: colors.ink,
     fontFamily: fonts.regular,
-    fontSize: 17,
+    fontSize: 16,
     lineHeight: 22,
+  },
+  messageInput: {
+    borderRadius: 999,
+    minHeight: 46,
+    paddingVertical: 10,
   },
   authActions: {
     gap: space.md,
+    paddingBottom: space.xs,
   },
-  fieldLabel: {
+  authIntro: {
+    gap: 2,
+    paddingTop: space.sm,
+    paddingBottom: space.xs,
+  },
+  brand: {
     color: colors.ink,
     fontFamily: fonts.semibold,
+    fontSize: 28,
+    lineHeight: 34,
+    letterSpacing: -0.4,
+  },
+  authLead: {
+    color: colors.inkMuted,
+    fontFamily: fonts.regular,
     fontSize: 15,
     lineHeight: 20,
   },
+  authField: {
+    gap: 6,
+  },
+  fieldLabel: {
+    color: colors.inkMuted,
+    fontFamily: fonts.semibold,
+    fontSize: 13,
+    lineHeight: 18,
+  },
   authButton: {
-    minHeight: 52,
+    minHeight: 50,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: colors.lineStrong,
-    backgroundColor: colors.white,
+    borderRadius: 14,
+    backgroundColor: colors.primaryStrong,
     paddingHorizontal: space.lg,
+    marginTop: space.xs,
+  },
+  authButtonPressed: {
+    opacity: 0.88,
   },
   authButtonDisabled: {
     opacity: 0.4,
   },
   authLabel: {
-    color: colors.ink,
+    color: colors.white,
     fontFamily: fonts.semibold,
-    fontSize: 17,
+    fontSize: 16,
     lineHeight: 22,
   },
   authSwitch: {
-    minHeight: 44,
+    minHeight: 40,
     alignItems: "center",
     justifyContent: "center",
   },
   authSwitchLabel: {
-    color: colors.ink,
-    fontFamily: fonts.regular,
-    fontSize: 15,
+    color: colors.primaryStrong,
+    fontFamily: fonts.semibold,
+    fontSize: 14,
     lineHeight: 20,
     textAlign: "center",
   },
   errorText: {
-    color: colors.ink,
+    color: colors.danger,
     fontFamily: fonts.regular,
-    fontSize: 16,
-    lineHeight: 22,
+    fontSize: 14,
+    lineHeight: 20,
     textAlign: "center",
-  },
-  pressed: {
-    backgroundColor: colors.line,
   },
 });

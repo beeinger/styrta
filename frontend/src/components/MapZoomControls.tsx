@@ -1,7 +1,7 @@
-import { I18nManager, Pressable, StyleSheet, Text, View } from 'react-native';
-import type { ReactNode } from 'react';
+import { Pressable, StyleSheet, View, I18nManager } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { colors, fonts, glassShadow, space } from '../theme';
+import { Icon, type IconName } from '../icons';
+import { colors, glassShadow, space } from '../theme';
 
 type MapZoomControlsProps = {
   bottom: number;
@@ -36,14 +36,14 @@ export function MapZoomControls({
         <ZoomButton
           label="Zoom in"
           hint="Shows a smaller area of the map"
-          glyph="+"
+          name="plus"
           disabled={!canZoomIn}
           onPress={onZoomIn}
         />
         <ZoomButton
           label="Zoom out"
           hint="Shows a wider area of the map"
-          glyph="−"
+          name="minus"
           disabled={!canZoomOut}
           onPress={onZoomOut}
         />
@@ -56,7 +56,7 @@ export function MapZoomControls({
         <ZoomButton
           label="Center"
           hint="Centers the map on your location"
-          glyph={<CenterGlyph />}
+          name="locate"
           disabled={!canCenter}
           onPress={onCenter}
         />
@@ -68,12 +68,12 @@ export function MapZoomControls({
 type ZoomButtonProps = {
   label: string;
   hint: string;
-  glyph: ReactNode;
+  name: IconName;
   disabled: boolean;
   onPress: () => void;
 };
 
-function ZoomButton({ label, hint, glyph, disabled, onPress }: ZoomButtonProps) {
+function ZoomButton({ label, hint, name, disabled, onPress }: ZoomButtonProps) {
   return (
     <Pressable
       accessibilityRole="button"
@@ -90,31 +90,8 @@ function ZoomButton({ label, hint, glyph, disabled, onPress }: ZoomButtonProps) 
         pressed && !disabled && styles.buttonPressed,
       ]}
     >
-      {typeof glyph === 'string' ? (
-        <Text
-          style={styles.glyph}
-          maxFontSizeMultiplier={1.6}
-          importantForAccessibility="no"
-          accessibilityElementsHidden
-        >
-          {glyph}
-        </Text>
-      ) : (
-        glyph
-      )}
+      <Icon name={name} size={20} color={disabled ? colors.inkMuted : colors.ink} />
     </Pressable>
-  );
-}
-
-function CenterGlyph() {
-  return (
-    <View
-      style={styles.targetRing}
-      importantForAccessibility="no"
-      accessibilityElementsHidden
-    >
-      <View style={styles.targetDot} />
-    </View>
   );
 }
 
@@ -136,32 +113,6 @@ const styles = StyleSheet.create({
     opacity: 0.4,
   },
   buttonPressed: {
-    backgroundColor: colors.white,
-  },
-  glyph: {
-    color: colors.ink,
-    fontSize: 28,
-    lineHeight: 28,
-    height: 28,
-    width: 28,
-    fontFamily: fonts.semibold,
-    textAlign: 'center',
-    textAlignVertical: 'center',
-    includeFontPadding: false,
-  },
-  targetRing: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    borderWidth: 2,
-    borderColor: colors.ink,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  targetDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: colors.ink,
+    backgroundColor: colors.glassSelected,
   },
 });

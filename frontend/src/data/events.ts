@@ -9,6 +9,7 @@ export type MeetupEvent = {
   latitude: number;
   longitude: number;
   hostName: string;
+  placeName?: string;
   startsAt: string;
   hostedByMe?: boolean;
 };

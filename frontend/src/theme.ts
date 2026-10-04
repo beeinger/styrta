@@ -4,27 +4,30 @@ export const colors = {
   tertiary: "#e8cea1",
   quaternary: "#cb8f52",
   tertiaryWash: "#F6EBDA", // 40% tertiary mixed with 60% white. Solid, so text contrast is stable.
-  quaternaryWash: "rgba(203, 143, 82, 0.28)",
-  glass: "rgba(255, 255, 255, 0.94)",
-  glassSelected: "rgba(236, 229, 156, 0.94)", // secondary at the same alpha as glass
+  tertiaryWashFade: "rgba(246, 235, 218, 0)",
+  quaternaryWash: "rgba(203, 143, 82, 0.22)",
+  glass: "rgba(255, 255, 255, 0.96)",
+  glassSelected: "rgba(236, 229, 156, 0.96)", // secondary at the same alpha as glass
   primaryStrong: "#3F5C34",
   ink: "#1C1C1E",
   inkMuted: "#636366",
-  line: "#D1D1D6",
-  lineStrong: "#3A3A3C",
+  line: "#E4E1DA",
+  lineStrong: "#C8C4BB",
   white: "#FFFFFF",
+  canvas: "#F3F1EC",
+  danger: "#9F2D2D",
 } as const;
 
-export const space = { xs: 4, sm: 8, md: 12, lg: 16 } as const;
+export const space = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24 } as const;
 
-export const chatCornerRadius = 24;
+export const chatCornerRadius = 28;
 
 export const glassShadow = {
-  shadowColor: "#000000",
-  shadowOffset: { width: 0, height: 8 },
-  shadowOpacity: 0.16,
-  shadowRadius: 20,
-  elevation: 8,
+  shadowColor: "#1C1C1E",
+  shadowOffset: { width: 0, height: 6 },
+  shadowOpacity: 0.12,
+  shadowRadius: 16,
+  elevation: 6,
 } as const;
 
 export const fonts = {
