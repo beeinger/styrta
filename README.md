@@ -1,5 +1,29 @@
 # Styrta
 
+## Technical note
+
+We did EVERYTHING and EVERYTHING works. We’re honestly surprised ourselves.
+
+We shipped the full stack on Kubernetes, including a local Qwen 3.8 Flash Next LLM + Whisper STT + Piper TTS + embeddings, a Rust backend with PostgreSQL + pgvector, our own custom LLM harness with tools, per-user memory, actual vector search & rankings, and full processing and embedding of the entire ROPS social innovation library.
+
+On top of that, we have maps, event creation handled entirely by the assistant, and event-joining recommendations based on advanced matching.
+
+And we also have a fully working React Native frontend, deployed on the web but fully functional as a mobile app.
+
+Everything is fully deployed. Everything works.
+
+## Notka techniczna
+
+Zrobiliśmy WSZYSTKO i WSZYSTKO działa. Sami jesteśmy zdziwieni.
+
+Dowieźliśmy cały stack na Kubernetesie, włącznie z lokalnym LLM-em Qwen 3.8 Flash Next + Whisper STT + Piper TTS + embeddingami, backendem w Ruście z PostgreSQL + pgvector, naszym autorskim harnessem LLM-a z toolami, pamięcią per użytkownik, faktycznymi rankingami i vector search oraz pełnym procesowaniem i embeddingiem całej biblioteki innowacji społecznych ROPS.
+
+Do tego mamy mapy, kreowanie eventów w pełni przez asystenta oraz podpowiedzi dołączania do eventów bazowane na zaawansowanym matchingu.
+
+I do tego działający frontend w React Native, deployed na stronie internetowej, ale w pełni działający jako aplikacja mobilna.
+
+Wszystko w pełni deployed. Wszystko działa.
+
 Styrta is a conversation for people in Kraków and Małopolska. They speak or type to Jadzia. Her name is Jadwiga. The transcript stays on screen. Most of the time that is the whole product: talk about a problem, a public service, or a social innovation, get it explained in plain language, and keep going.
 
 Jadzia answers from a library she has actually read, the [ROPS social-innovation catalog](https://rops.krakow.pl/innowacje-spoleczne/biblioteka-innowacji-spolecznych/kategorie). A person does not have to know that a project exists, or its name. They describe the situation. The reply can shorten a long pack of PDFs, say what the materials support, and name the page it came from. If the library has nothing, she says so.
