@@ -19,6 +19,7 @@ import { WebView, type WebViewHandle, type WebViewMessageEvent } from "./MapWebV
 import { getMyEvents, getNearbyEvents, signIn as requestSignIn, signUp as requestSignUp } from "../api/client";
 import { ApiError, type MyEvent, type NearbyEvent, type Session } from "../api/types";
 import { describeAttendance, formatEventStart, type MeetupEvent } from "../data/events";
+import { demoLocation } from "../demoLocation";
 import { chatCornerRadius, space } from "../theme";
 import { AiChatSheet } from "./AiChatSheet";
 import { AttendingBubbles } from "./AttendingBubbles";
@@ -141,55 +142,60 @@ export function MapScreen() {
       }
       locating.current = true;
       try {
-        const existing = await Location.getForegroundPermissionsAsync();
-        const permission =
-          existing.status === "granted"
-            ? existing
-            : await Location.requestForegroundPermissionsAsync();
-        if (permission.status !== "granted") {
-          if (recenter) {
-            AccessibilityInfo.announceForAccessibility(
-              "Location access was denied.",
-            );
-          }
-          return;
-        }
-
-        if (Platform.OS === "android") {
-          try {
-            await Location.enableNetworkProviderAsync();
-          } catch {
-            // The position request below fails if location services stay off.
-          }
-        }
-
         let latest: Coordinates | null = null;
-        const lastKnown = await Location.getLastKnownPositionAsync();
-        if (lastKnown) {
-          latest = {
-            latitude: lastKnown.coords.latitude,
-            longitude: lastKnown.coords.longitude,
-          };
-          publishLocation(lastKnown.coords);
-        }
+        if (demoLocation) {
+          latest = demoLocation;
+          publishLocation(demoLocation);
+        } else {
+          const existing = await Location.getForegroundPermissionsAsync();
+          const permission =
+            existing.status === "granted"
+              ? existing
+              : await Location.requestForegroundPermissionsAsync();
+          if (permission.status !== "granted") {
+            if (recenter) {
+              AccessibilityInfo.announceForAccessibility(
+                "Location access was denied.",
+              );
+            }
+            return;
+          }
 
-        try {
-          const current = await withTimeout(
-            Location.getCurrentPositionAsync({
-              accuracy: Location.Accuracy.Balanced,
-            }),
-            10000,
-          );
-          latest = {
-            latitude: current.coords.latitude,
-            longitude: current.coords.longitude,
-          };
-          publishLocation(current.coords);
-        } catch {
-          if (!latest && recenter) {
-            AccessibilityInfo.announceForAccessibility(
-              "Could not find your location.",
+          if (Platform.OS === "android") {
+            try {
+              await Location.enableNetworkProviderAsync();
+            } catch {
+              // The position request below fails if location services stay off.
+            }
+          }
+
+          const lastKnown = await Location.getLastKnownPositionAsync();
+          if (lastKnown) {
+            latest = {
+              latitude: lastKnown.coords.latitude,
+              longitude: lastKnown.coords.longitude,
+            };
+            publishLocation(lastKnown.coords);
+          }
+
+          try {
+            const current = await withTimeout(
+              Location.getCurrentPositionAsync({
+                accuracy: Location.Accuracy.Balanced,
+              }),
+              10000,
             );
+            latest = {
+              latitude: current.coords.latitude,
+              longitude: current.coords.longitude,
+            };
+            publishLocation(current.coords);
+          } catch {
+            if (!latest && recenter) {
+              AccessibilityInfo.announceForAccessibility(
+                "Could not find your location.",
+              );
+            }
           }
         }
 
@@ -203,7 +209,7 @@ export function MapScreen() {
     [],
   );
 
-  function publishLocation(coords: Location.LocationObjectCoords) {
+  function publishLocation(coords: Coordinates) {
     const next = {
       latitude: coords.latitude,
       longitude: coords.longitude,
