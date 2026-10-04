@@ -104,10 +104,12 @@ export function AiChatSheet({
   const spokenTurns = useRef(new Set<string>());
   const announcedTranscripts = useRef(new Set<string>());
   const voiceLock = useRef(false);
+  const voiceMutedRef = useRef(false);
   const recorderRef = useRef<AudioRecorder | null>(null);
   const [expanded, setExpanded] = useState(true);
   const [listening, setListening] = useState(false);
   const [sendingVoice, setSendingVoice] = useState(false);
+  const [voiceMuted, setVoiceMuted] = useState(false);
   const [draft, setDraft] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [authMode, setAuthMode] = useState<"sign-in" | "sign-up">("sign-in");
@@ -188,7 +190,8 @@ export function AiChatSheet({
   };
 
   const playReply = async (turnId: string, url: string) => {
-    if (spokenTurns.current.has(turnId)) {
+    if (spokenTurns.current.has(turnId) || voiceMutedRef.current) {
+      spokenTurns.current.add(turnId);
       return;
     }
     const token = accessTokenRef.current;
@@ -530,6 +533,22 @@ export function AiChatSheet({
       stream.close();
     };
   }, [accessToken]);
+
+  const toggleVoice = () => {
+    const next = !voiceMutedRef.current;
+    voiceMutedRef.current = next;
+    setVoiceMuted(next);
+    if (next) {
+      try {
+        replyPlayer.current?.pause();
+      } catch {
+        replyPlayer.current = null;
+      }
+    }
+    AccessibilityInfo.announceForAccessibility(
+      next ? "Assistant voice muted." : "Assistant voice on.",
+    );
+  };
 
   const toggleExpanded = () => {
     const next = !expanded;
@@ -886,6 +905,31 @@ export function AiChatSheet({
               publishMapClearance(headerHeight.current, composerHeight.current);
             }}
           >
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={voiceMuted ? "Unmute assistant voice" : "Mute assistant voice"}
+              accessibilityHint={
+                voiceMuted
+                  ? "Assistant replies stay on screen."
+                  : "Assistant replies are read aloud."
+              }
+              accessibilityState={{ selected: voiceMuted }}
+              onPress={toggleVoice}
+              hitSlop={4}
+              style={({ pressed }) => [
+                styles.chevronButton,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text
+                style={styles.voiceEmoji}
+                maxFontSizeMultiplier={1.8}
+                importantForAccessibility="no"
+                accessibilityElementsHidden
+              >
+                {voiceMuted ? "🔇" : "🔊"}
+              </Text>
+            </Pressable>
             <Pressable
               ref={toggleRef}
               accessibilityRole="button"
@@ -1453,8 +1497,12 @@ const styles = StyleSheet.create({
   },
   header: {
     flexDirection: "row",
-    justifyContent: "flex-end",
+    justifyContent: "space-between",
     alignItems: "center",
+  },
+  voiceEmoji: {
+    fontSize: 22,
+    lineHeight: 28,
   },
   chevronButton: {
     width: 44,
