@@ -11,13 +11,24 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
+import {
+  AudioModule,
+  RecordingPresets,
+  createAudioPlayer,
+  setAudioModeAsync,
+  useAudioRecorder,
+  type AudioPlayer,
+} from "expo-audio";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import {
   getTurn,
   listMessages,
   openChatStream,
+  postAudioMessage,
   postMessage,
+  spokenReplySource,
+  type SpeechClip,
 } from "../api/client";
 import { ApiError, type ChatStreamEvent, type HistoryMessage } from "../api/types";
 
@@ -49,8 +60,12 @@ const CARD_PADDING_TOP = 4;
 const POLL_INTERVAL_MS = 700;
 const POLL_DEADLINE_MS = 180_000;
 const THINKING_LINE = "Thinking...";
+const LISTENING_LINE = "Listening…";
 const FAILURE_LINE = "The reply failed.";
 const TIMEOUT_LINE = "The reply did not arrive.";
+const MIC_DENIED = "Microphone access is off. Allow it to speak.";
+const CLIP_EMPTY = "No speech was captured. Tap to speak and try again.";
+const MIN_CLIP_MS = 400;
 
 export function AiChatSheet({
   accessToken,
@@ -82,7 +97,14 @@ export function AiChatSheet({
   const pollingTurns = useRef(new Set<string>());
   const onStreamEvent = useRef<(event: ChatStreamEvent) => void>(() => {});
   const onStreamError = useRef<(error: Error) => void>(() => {});
+  const replyPlayer = useRef<AudioPlayer | null>(null);
+  const spokenTurns = useRef(new Set<string>());
+  const announcedTranscripts = useRef(new Set<string>());
+  const voiceLock = useRef(false);
+  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const [expanded, setExpanded] = useState(true);
+  const [listening, setListening] = useState(false);
+  const [sendingVoice, setSendingVoice] = useState(false);
   const [draft, setDraft] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [authMode, setAuthMode] = useState<"sign-in" | "sign-up">("sign-in");
@@ -106,6 +128,85 @@ export function AiChatSheet({
   const finishTurn = (turnId: string) => {
     finishedTurns.current.add(turnId);
     pendingTurns.current.delete(turnId);
+  };
+
+  const revealTranscript = (turnId: string, text: string) => {
+    if (!mountedRef.current) {
+      return;
+    }
+    let applied = false;
+    setMessages((current) => {
+      let matched = false;
+      const next = current.map((message) => {
+        if (message.role === "user" && message.turnId === turnId) {
+          matched = true;
+          return { ...message, text, pending: false };
+        }
+        return message;
+      });
+      if (matched) {
+        applied = true;
+        return next;
+      }
+      let index = -1;
+      for (let cursor = next.length - 1; cursor >= 0; cursor -= 1) {
+        const message = next[cursor];
+        if (message?.role === "user" && message.pending) {
+          index = cursor;
+          break;
+        }
+      }
+      const existing = index === -1 ? undefined : next[index];
+      if (!existing) {
+        return next;
+      }
+      applied = true;
+      const copy = next.slice();
+      copy[index] = { ...existing, turnId, text, pending: false };
+      return copy;
+    });
+    if (applied && !announcedTranscripts.current.has(turnId)) {
+      announcedTranscripts.current.add(turnId);
+      AccessibilityInfo.announceForAccessibility(`You said: ${text}`);
+    }
+  };
+
+  const dropPendingVoice = (turnId: string) => {
+    setMessages((current) =>
+      current.filter(
+        (message) =>
+          !(
+            message.role === "user" &&
+            message.pending &&
+            (message.turnId === turnId || message.turnId == null)
+          ),
+      ),
+    );
+  };
+
+  const playReply = async (turnId: string, url: string) => {
+    if (spokenTurns.current.has(turnId)) {
+      return;
+    }
+    const token = accessTokenRef.current;
+    if (!token || !mountedRef.current) {
+      return;
+    }
+    spokenTurns.current.add(turnId);
+    try {
+      await setAudioModeAsync(audioSession(false));
+      if (!mountedRef.current || accessTokenRef.current !== token) {
+        spokenTurns.current.delete(turnId);
+        return;
+      }
+      replyPlayer.current?.release();
+      const player = createAudioPlayer(spokenReplySource(token, url));
+      replyPlayer.current = player;
+      player.play();
+    } catch {
+      spokenTurns.current.delete(turnId);
+      replyPlayer.current = null;
+    }
   };
 
   const dropMessage = (id: string) => {
@@ -179,11 +280,18 @@ export function AiChatSheet({
             if (turn.status === "done") {
               finishTurn(turnId);
               repliedTurns.current.add(turnId);
+              if (turn.user_text) {
+                revealTranscript(turnId, turn.user_text);
+              }
               writeAssistant(turnId, turn.reply_text ?? "", "replace");
+              if (turn.audio_ready) {
+                void playReply(turnId, `/v1/chat/turns/${turnId}/audio`);
+              }
               return;
             }
             if (turn.status === "failed") {
               finishTurn(turnId);
+              dropPendingVoice(turnId);
               writeAssistant(turnId, FAILURE_LINE, "replace");
               AccessibilityInfo.announceForAccessibility(FAILURE_LINE);
               return;
@@ -238,13 +346,20 @@ export function AiChatSheet({
         }
         writeAssistant(event.turn_id, event.text, "append");
         return;
+      case "transcript.ready":
+        revealTranscript(event.turn_id, event.text);
+        return;
       case "reply.done":
         finishTurn(event.turn_id);
         repliedTurns.current.add(event.turn_id);
         writeAssistant(event.turn_id, event.text, "replace");
         return;
+      case "audio.ready":
+        void playReply(event.turn_id, event.url);
+        return;
       case "turn.failed":
         finishTurn(event.turn_id);
+        dropPendingVoice(event.turn_id);
         writeAssistant(event.turn_id, event.error, "replace");
         AccessibilityInfo.announceForAccessibility(event.error);
         return;
@@ -275,8 +390,18 @@ export function AiChatSheet({
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      replyPlayer.current?.release();
+      replyPlayer.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    return () => {
+      if (recorder.isRecording) {
+        void recorder.stop();
+      }
+    };
+  }, [recorder]);
 
   useEffect(() => {
     let mounted = true;
@@ -336,10 +461,19 @@ export function AiChatSheet({
     pendingTurns.current.clear();
     finishedTurns.current.clear();
     repliedTurns.current.clear();
+    spokenTurns.current.clear();
+    announcedTranscripts.current.clear();
+    replyPlayer.current?.release();
+    replyPlayer.current = null;
     if (!accessToken) {
       setMessages([]);
       setChatError(null);
       setDraft("");
+      setListening(false);
+      setSendingVoice(false);
+      if (recorder.isRecording) {
+        void recorder.stop();
+      }
       return;
     }
     const token = accessToken;
@@ -465,6 +599,142 @@ export function AiChatSheet({
       AccessibilityInfo.announceForAccessibility(message);
     }
   }
+
+  async function deliverAudio(token: string, clip: SpeechClip) {
+    nextMessageId.current += 1;
+    const messageId = `local-${nextMessageId.current}`;
+    const thinkingId = `thinking-${messageId}`;
+    setMessages((current) => [
+      ...current,
+      {
+        id: messageId,
+        role: "user",
+        text: LISTENING_LINE,
+        local: true,
+        pending: true,
+      },
+      {
+        id: thinkingId,
+        role: "assistant",
+        text: THINKING_LINE,
+        pending: true,
+        local: true,
+      },
+    ]);
+    setChatError(null);
+    AccessibilityInfo.announceForAccessibility("Message sent. Thinking.");
+    try {
+      const accepted = await postAudioMessage(token, clip);
+      if (!mountedRef.current || accessTokenRef.current !== token) {
+        return;
+      }
+      if (finishedTurns.current.has(accepted.turn_id)) {
+        dropMessage(thinkingId);
+        return;
+      }
+      const assistantId = `assistant-${accepted.turn_id}`;
+      setMessages((current) =>
+        current.map((message) => {
+          if (message.id === messageId) {
+            return { ...message, turnId: accepted.turn_id };
+          }
+          if (message.id === thinkingId) {
+            return { ...message, id: assistantId, turnId: accepted.turn_id };
+          }
+          return message;
+        }),
+      );
+      pendingTurns.current.add(accepted.turn_id);
+      pollTurn(accepted.turn_id);
+    } catch (error) {
+      if (!mountedRef.current || accessTokenRef.current !== token) {
+        return;
+      }
+      dropMessage(thinkingId);
+      dropMessage(messageId);
+      if (isUnauthorized(error)) {
+        onSessionLostRef.current(readableError(error));
+        return;
+      }
+      const message = readableError(error);
+      setChatError(message);
+      AccessibilityInfo.announceForAccessibility(message);
+    }
+  }
+
+  const onSpeak = () => {
+    if (voiceLock.current || sendingVoice) {
+      return;
+    }
+    const token = accessToken;
+    if (!token) {
+      return;
+    }
+    if (listening) {
+      voiceLock.current = true;
+      setListening(false);
+      setSendingVoice(true);
+      void (async () => {
+        try {
+          const duration = recorder.getStatus().durationMillis;
+          await recorder.stop();
+          const uri = recorder.uri;
+          if (!mountedRef.current || accessTokenRef.current !== token) {
+            return;
+          }
+          if (!uri || duration < MIN_CLIP_MS) {
+            setChatError(CLIP_EMPTY);
+            AccessibilityInfo.announceForAccessibility(CLIP_EMPTY);
+            return;
+          }
+          await deliverAudio(token, speechClip(uri));
+        } catch (error) {
+          if (!mountedRef.current) {
+            return;
+          }
+          const message = readableError(error);
+          setChatError(message);
+          AccessibilityInfo.announceForAccessibility(message);
+        } finally {
+          setSendingVoice(false);
+          voiceLock.current = false;
+        }
+      })();
+      return;
+    }
+    voiceLock.current = true;
+    void (async () => {
+      try {
+        const permission = await AudioModule.requestRecordingPermissionsAsync();
+        if (!permission.granted) {
+          setChatError(MIC_DENIED);
+          AccessibilityInfo.announceForAccessibility(MIC_DENIED);
+          return;
+        }
+        await setAudioModeAsync(audioSession(true));
+        await recorder.prepareToRecordAsync();
+        recorder.record();
+        if (!mountedRef.current) {
+          if (recorder.isRecording) {
+            await recorder.stop();
+          }
+          return;
+        }
+        setListening(true);
+        setChatError(null);
+        AccessibilityInfo.announceForAccessibility("Listening. Tap again to send.");
+      } catch (error) {
+        if (!mountedRef.current) {
+          return;
+        }
+        const message = readableError(error);
+        setChatError(message);
+        AccessibilityInfo.announceForAccessibility(message);
+      } finally {
+        voiceLock.current = false;
+      }
+    })();
+  };
 
   const awaitingReply = messages.some((message) => message.pending);
   const submitAuth = () => {
@@ -641,23 +911,36 @@ export function AiChatSheet({
               ) : null}
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="Tap to speak"
-                accessibilityHint="Voice input is not available yet."
-                onPress={() => {
-                  AccessibilityInfo.announceForAccessibility(
-                    "Voice input is not available yet.",
-                  );
+                accessibilityLabel={
+                  sendingVoice ? "Sending" : listening ? "Tap to stop" : "Tap to speak"
+                }
+                accessibilityHint={
+                  listening
+                    ? "Stops listening and sends what you said."
+                    : "Starts listening. Tap again to send what you said."
+                }
+                accessibilityState={{
+                  selected: listening,
+                  busy: sendingVoice,
+                  disabled: sendingVoice,
                 }}
-                style={({ pressed }) => [styles.speak, pressed && styles.pressed]}
+                disabled={sendingVoice}
+                onPress={onSpeak}
+                style={({ pressed }) => [
+                  styles.speak,
+                  listening && styles.speakListening,
+                  pressed && !sendingVoice && styles.pressed,
+                  sendingVoice && styles.authButtonDisabled,
+                ]}
               >
-                <SoundWave />
+                <SoundWave active={listening} />
                 <Text
-                  style={styles.speakLabel}
+                  style={[styles.speakLabel, listening && styles.speakLabelListening]}
                   maxFontSizeMultiplier={1.8}
                   importantForAccessibility="no"
                   accessibilityElementsHidden
                 >
-                  Tap to speak
+                  {sendingVoice ? "Sending" : listening ? "Tap to stop" : "Tap to speak"}
                 </Text>
               </Pressable>
               <TextInput
@@ -815,7 +1098,24 @@ function ChevronGlyph({ expanded }: { expanded: boolean }) {
   );
 }
 
-function SoundWave() {
+function audioSession(allowsRecording: boolean) {
+  return {
+    playsInSilentMode: true,
+    interruptionMode: allowsRecording ? ("doNotMix" as const) : ("duckOthers" as const),
+    allowsRecording,
+    shouldPlayInBackground: false,
+    shouldRouteThroughEarpiece: false,
+  };
+}
+
+function speechClip(uri: string): SpeechClip {
+  if (Platform.OS === "web") {
+    return { uri, name: "audio.webm", type: "audio/webm" };
+  }
+  return { uri, name: "audio.m4a", type: "audio/mp4" };
+}
+
+function SoundWave({ active }: { active: boolean }) {
   return (
     <View
       style={styles.wave}
@@ -823,7 +1123,10 @@ function SoundWave() {
       accessibilityElementsHidden
     >
       {BAR_HEIGHTS.map((height, index) => (
-        <View key={`bar-${index}`} style={[styles.bar, { height }]} />
+        <View
+          key={`bar-${index}`}
+          style={[styles.bar, active && styles.barListening, { height }]}
+        />
       ))}
     </View>
   );
@@ -940,11 +1243,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     marginBottom: 10,
   },
+  speakListening: {
+    backgroundColor: "#1C1C1E",
+    borderColor: "#1C1C1E",
+  },
   speakLabel: {
     color: "#1C1C1E",
     fontSize: 17,
     fontWeight: "600",
     lineHeight: 22,
+  },
+  speakLabelListening: {
+    color: "#FFFFFF",
   },
   wave: {
     width: 28,
@@ -957,6 +1267,9 @@ const styles = StyleSheet.create({
     width: 3,
     borderRadius: 1.5,
     backgroundColor: "#1C1C1E",
+  },
+  barListening: {
+    backgroundColor: "#FFFFFF",
   },
   input: {
     minHeight: 48,

@@ -22,6 +22,14 @@ export default ({ config }: ConfigContext): ExpoConfig => {
             'Allow Styrta to use your location to center the map on you.',
         },
       ],
+      [
+        'expo-audio',
+        {
+          microphonePermission: 'Allow Styrta to use the microphone so you can speak.',
+          enableBackgroundRecording: false,
+          enableBackgroundPlayback: false,
+        },
+      ],
     ],
   };
 };

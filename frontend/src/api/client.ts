@@ -1,3 +1,5 @@
+import { Platform } from "react-native";
+
 import { API_BASE_URL } from "./config";
 import { clearStoredSession, loadStoredSession, saveStoredSession } from "./session";
 import {
@@ -104,6 +106,64 @@ export function postMessage(accessToken: string, text: string): Promise<Accepted
     202,
     parseAcceptedTurn,
   );
+}
+
+export type SpeechClip = {
+  uri: string;
+  name: string;
+  type: string;
+};
+
+export async function postAudioMessage(
+  accessToken: string,
+  clip: SpeechClip,
+): Promise<AcceptedTurn> {
+  const first = await sendAudio(accessToken, clip);
+  if (first.status === 401) {
+    await drain(first);
+    const nextToken = await refreshAccessToken();
+    const second = await sendAudio(nextToken, clip);
+    return readJson(second, 202, parseAcceptedTurn);
+  }
+  return readJson(first, 202, parseAcceptedTurn);
+}
+
+export function spokenReplySource(
+  accessToken: string,
+  url: string,
+): { uri: string; headers: Record<string, string> } {
+  const path = url.startsWith("/") ? url : `/${url}`;
+  const uri = url.startsWith("http") ? url : `${API_BASE_URL}${path}`;
+  return {
+    uri,
+    headers: { Authorization: `Bearer ${accessToken}` },
+  };
+}
+
+async function sendAudio(accessToken: string, clip: SpeechClip): Promise<Response> {
+  return fetch(`${API_BASE_URL}/v1/chat/messages`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}` },
+    body: await audioBody(clip),
+  });
+}
+
+async function audioBody(clip: SpeechClip): Promise<FormData> {
+  const body = new FormData();
+  if (Platform.OS === "web") {
+    const response = await fetch(clip.uri);
+    const blob = await response.blob();
+    const type = blob.type || clip.type;
+    const file = blob.type === type ? blob : new Blob([blob], { type });
+    body.append("audio", file, clip.name);
+    return body;
+  }
+  body.append("audio", {
+    uri: clip.uri,
+    name: clip.name,
+    type: clip.type,
+  } as unknown as Blob);
+  return body;
 }
 
 export function getTurn(accessToken: string, turnId: string): Promise<TurnView> {
