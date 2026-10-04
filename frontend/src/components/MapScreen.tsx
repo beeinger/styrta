@@ -23,6 +23,7 @@ import {
 import {
   getMyEvents,
   getNearbyEvents,
+  restoreSession,
   signIn as requestSignIn,
   signUp as requestSignUp,
 } from "../api/client";
@@ -319,6 +320,19 @@ export function MapScreen() {
     aliveRef.current = true;
     return () => {
       aliveRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void restoreSession().then((stored) => {
+      if (cancelled || !stored) {
+        return;
+      }
+      setSession((current) => current ?? stored);
+    });
+    return () => {
+      cancelled = true;
     };
   }, []);
 

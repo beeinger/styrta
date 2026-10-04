@@ -44,6 +44,29 @@ export async function signIn(email: string, password: string): Promise<Session> 
   return session;
 }
 
+const ACCESS_SKEW_MS = 30_000;
+
+export async function restoreSession(): Promise<Session | null> {
+  const stored = await loadStoredSession();
+  if (!stored) {
+    return null;
+  }
+  if (accessStillValid(stored.access_expires_at)) {
+    return stored;
+  }
+  try {
+    await refreshAccessToken();
+  } catch {
+    return null;
+  }
+  return loadStoredSession();
+}
+
+function accessStillValid(expiresAt: string): boolean {
+  const expires = Date.parse(expiresAt);
+  return Number.isFinite(expires) && expires > Date.now() + ACCESS_SKEW_MS;
+}
+
 function displayNameFromEmail(email: string): string {
   const local = email.trim().split("@")[0]?.trim() ?? "";
   return local.length > 0 ? local.slice(0, 80) : "Tester";
