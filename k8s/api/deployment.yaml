@@ -21,7 +21,7 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: serve
-          image: 192.168.10.3:30500/styrta-serve:20261004
+          image: 192.168.10.3:30500/styrta-serve:20261004-2
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

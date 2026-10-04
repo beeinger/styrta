@@ -681,6 +681,7 @@ async fn fresh<S: HarnessStore>(
         conversation.summary.as_deref(),
         &recent,
         &user_text,
+        Utc::now(),
     );
     let checkpoint = Checkpoint {
         round: 0,
@@ -744,9 +745,9 @@ async fn repair<S: HarnessStore>(
     let mut messages = messages.to_vec();
     messages.push(Message::User {
         content: if prompt::english_locale(locale) {
-            "The previous reply was empty. Answer in plain text without tools. If you have no event and no library result, say so. Do not invent a URL or an event.".into()
+            "The previous reply was empty. Answer from the tool results already in the thread, in two short spoken sentences, with no tools. If a result is empty or has error, say that. Do not invent a URL, an event, or a coordinate.".into()
         } else {
-            "Poprzednia odpowiedź była pusta. Odpowiedz zwykłym tekstem, bez narzędzi. Jeśli nie masz wydarzenia ani wyniku z biblioteki, powiedz to. Nie wymyślaj adresu URL ani wydarzenia.".into()
+            "Poprzednia odpowiedź była pusta. Odpowiedz na podstawie wyników narzędzi w tym wątku, dwoma krótkimi zdaniami, bez narzędzi. Gdy wynik jest pusty albo ma error, powiedz to. Nie wymyślaj adresu URL, wydarzenia ani współrzędnych.".into()
         },
     });
     let mut request = CompletionRequest::new(messages);
@@ -869,9 +870,9 @@ fn apology(locale: &str) -> &'static str {
 
 fn summary_instruction(locale: &str) -> &'static str {
     if prompt::english_locale(locale) {
-        "Summarize the older conversation in a few sentences. Do not invent events or citations."
+        "Summarize the older conversation in a few sentences of facts: constraints, plans, and citations that were actually returned. Do not invent events, URLs, or coordinates."
     } else {
-        "Streść starszą rozmowę w kilku zdaniach. Nie wymyślaj wydarzeń ani źródeł."
+        "Streść starszą rozmowę w kilku zdaniach faktów: ograniczenia, plany i cytowania, które naprawdę wróciły. Nie wymyślaj wydarzeń, adresów URL ani współrzędnych."
     }
 }
 

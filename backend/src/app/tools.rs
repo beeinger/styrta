@@ -219,106 +219,110 @@ pub fn specs() -> Result<Vec<ToolDefinition>, Error> {
     Ok(vec![
         spec(
             ToolName::Remember,
-            "Store a fact the user just told you.",
+            "Call this for a fact that is not a profile field, in the turn they say it. On this tool, loneliness and company count only as long_term key or value. quote and short_term do not count. A like tag with the same words is set_profile, not this tool. If they are lonely, live alone, or say samotna, samotny, or samotność, store long_term and keep lonely, lives alone, or samotn in value. If they want company or towarzystwo, store long_term and keep wants company or towarzystwo in value. short_term is only this plan, such as tomorrow at 11 or tired today. Do not use this for age, mobility, likes, dislikes, or language.",
             schema(
                 json!({
-                    "durability": {"type": "string", "enum": ["long_term", "short_term"]},
-                    "key": {"type": "string"},
-                    "value": {"type": "string"},
-                    "quote": {"type": "string"},
-                    "confidence": {"type": "number"},
+                    "durability": {"type": "string", "enum": ["long_term", "short_term"], "description": "long_term stays. short_term is this plan only."},
+                    "key": {"type": "string", "description": "Short label, such as company or plan."},
+                    "value": {"type": "string", "description": "The fact, keeping lonely, lives alone, samotn, wants company, or towarzystwo when those apply."},
+                    "quote": {"type": "string", "description": "Their words, when you have them."},
+                    "confidence": {"type": "number", "description": "From 0 to 1. Omit if unsure."},
                 }),
                 &["durability", "key", "value"],
             ),
         ),
         spec(
             ToolName::Forget,
-            "Forget a topic the user named. Pass their words, not a row id.",
-            schema(json!({"topic": {"type": "string"}}), &["topic"]),
+            "Call this when they say a stored fact is wrong or they want it gone. topic is their words, not an id. If matched is false, say nothing was stored about that.",
+            schema(
+                json!({"topic": {"type": "string", "description": "Their words for the fact to drop."}}),
+                &["topic"],
+            ),
         ),
         spec(
             ToolName::SetProfile,
-            "Update any subset of the user's profile.",
+            "Call this to store profile fields they just stated. Send only those fields. One like_tag or dislike_tag per call. mobility must include the separate word wheelchair when they use one, or the tags padel, tennis, basketball, volleyball, squash, badminton, football, soccer, court, running, and run are not dropped. In Polish say na wózku. In English say they use a wheelchair. age_band is one of 18-24, 25-34, 35-44, 45-54, 55-64, 65+, the band that contains the age they gave. Ask if they were vague. locale is pl or en, only when they ask to switch. sportiness is 0 to 3 only if they said how active they are. Match tags are English singular words: walk, coffee, padel, tennis, basketball, volleyball, squash, badminton, football, running. A like_tag that contains lonely, lives alone, samotn, wants company, or towarzystwo also counts as company fit.",
             schema(
                 json!({
-                    "display_name": {"type": "string"},
-                    "locale": {"type": "string"},
-                    "age_band": {"type": "string"},
-                    "gender": {"type": "string"},
-                    "mobility": {"type": "string"},
-                    "sportiness": {"type": "integer"},
-                    "women_only": {"type": "boolean"},
+                    "display_name": {"type": "string", "description": "Name they asked to be called."},
+                    "locale": {"type": "string", "description": "pl or en, only when they ask to switch language."},
+                    "age_band": {"type": "string", "description": "One of 18-24, 25-34, 35-44, 45-54, 55-64, 65+."},
+                    "gender": {"type": "string", "description": "Only if they stated it."},
+                    "mobility": {"type": "string", "description": "Must contain wheelchair if they use one."},
+                    "sportiness": {"type": "integer", "description": "0 almost no sport, 3 very active. Omit if they did not say."},
+                    "women_only": {"type": "boolean", "description": "True only when they want to meet women only."},
                     "time_window": {
                         "type": "object",
+                        "description": "Standing hours they can go out, Europe/Warsaw local. Not a one-off such as tomorrow at 11. That is a short_term memory.",
                         "properties": {
-                            "start_minute": {"type": "integer"},
-                            "end_minute": {"type": "integer"},
+                            "start_minute": {"type": "integer", "description": "Minutes from local midnight, inclusive."},
+                            "end_minute": {"type": "integer", "description": "Minutes from local midnight, exclusive."},
                         },
                         "required": ["start_minute", "end_minute"],
                     },
-                    "like_tag": {"type": "string"},
-                    "dislike_tag": {"type": "string"},
-                    "bio": {"type": "string"},
+                    "like_tag": {"type": "string", "description": "One tag. Use walk, coffee, or a sport word from the description."},
+                    "dislike_tag": {"type": "string", "description": "One tag they refuse. Use padel, not paddle."},
+                    "bio": {"type": "string", "description": "Only a short bio they asked to store."},
                 }),
                 &[],
             ),
         ),
         spec(
             ToolName::SearchKnowledge,
-            "Search the library. An empty result means the library has nothing.",
+            "Call this when they ask about a service, a problem, loneliness, ageing, disability, or an existing innovation. query is their problem in their words, not a project name you guessed. An empty hits list means the library has nothing. Say that. Cite only title and page_url from hits. Add film_url only if they ask for a film. Do not offer to turn a hit into a grant, a form, or a service for a gmina.",
             schema(
                 json!({
-                    "query": {"type": "string"},
-                    "category": {"type": "string"},
+                    "query": {"type": "string", "description": "Their problem or the name they actually said."},
+                    "category": {"type": "string", "description": "Optional. Only a category they named."},
                 }),
                 &["query"],
             ),
         ),
         spec(
             ToolName::SearchEvents,
-            "Search nearby events with the same ranking as the map.",
+            "Call this when they want somewhere to go. lat and lng are required. Use coordinates they gave or from an earlier tool result. If you have none, use lat 50.0683 and lng 19.9917, TAURON Arena at ul. Stanisława Lema 7, and say you looked around the arena. query is optional. Do not add an activity the filters dropped. If capacity is set and signed_count is at least capacity, it is full: do not offer it, and join will fail. Speak one event unless they asked for a list: title, place_name, starts_at in local words, and host_name as stored. If promoted is true, say it is promoted. Do not speak score, distance_m, or coordinates. An empty events list means nothing in range passed.",
             schema(
                 json!({
-                    "query": {"type": "string"},
-                    "lat": {"type": "number"},
-                    "lng": {"type": "number"},
+                    "query": {"type": "string", "description": "Optional. The activity in a few words, such as walk or cafe."},
+                    "lat": {"type": "number", "description": "Latitude. 50.0683 only as the arena fallback."},
+                    "lng": {"type": "number", "description": "Longitude. 19.9917 only as the arena fallback."},
                 }),
                 &["lat", "lng"],
             ),
         ),
         spec(
             ToolName::SearchPeople,
-            "Search people near a location. Results omit other people's private notes.",
+            "Call this when they want company. lat and lng follow the same rule as search_events. There is no radius cap, so a farther person can still be returned. query is optional and only filters the stored name or shared tags. first_name is the display name, not a parsed given name. Say that name, the age band, shared interests, and the distance: within_500m as a short walk, within_2km as nearby, within_5km as a bit further, farther as a longer way. Say constraints in words. Do not invent a phone, an address, or a health note. An empty list means nobody with a live public meetup passed the filters.",
             schema(
                 json!({
-                    "query": {"type": "string"},
-                    "lat": {"type": "number"},
-                    "lng": {"type": "number"},
+                    "query": {"type": "string", "description": "Optional. A first name or a shared interest they named."},
+                    "lat": {"type": "number", "description": "Latitude. 50.0683 only as the arena fallback."},
+                    "lng": {"type": "number", "description": "Longitude. 19.9917 only as the arena fallback."},
                 }),
                 &["lat", "lng"],
             ),
         ),
         spec(
             ToolName::ListMyEvents,
-            "List events the user is going to.",
+            "Call this when they ask which meetups they are going to. Pass no arguments. It returns events where their attendance is going, not an event they only host. The status field is the event status, usually scheduled, not the attendance. If they just created one, speak from that create_event result. Speak title, place_name, and starts_at in local words.",
             schema(json!({}), &[]),
         ),
         spec(
             ToolName::CreateEvent,
-            "Create an event after the user asked. Emoji is one grapheme.",
+            "Call this only after they asked you to create this meetup. The longitude field is lon, not lng. Copy a search result's longitude into lon. Do not invent coordinates, and do not reuse the arena fallback unless they are meeting at the arena. starts_at is RFC3339 UTC. Europe/Warsaw is UTC+2 from 01:00 UTC on the last Sunday of March until 01:00 UTC on the last Sunday of October, otherwise UTC+1. place_name must be public. The store rejects kind not_public only, so do not send a home under a public kind. emoji is one grapheme and is not spoken. women_only true only when they asked for a women-only meetup. activity_tags use the same English words as set_profile. Omit capacity and description unless they gave them. Hosting does not mark them as going.",
             schema(
                 json!({
-                    "title": {"type": "string"},
-                    "emoji": {"type": "string"},
-                    "starts_at": {"type": "string"},
-                    "place_name": {"type": "string"},
-                    "kind": {"type": "string", "enum": ["cafe", "park", "hall", "square", "other_public", "not_public"]},
-                    "lat": {"type": "number"},
-                    "lon": {"type": "number"},
-                    "capacity": {"type": "integer"},
-                    "description": {"type": "string"},
-                    "activity_tags": {"type": "array", "items": {"type": "string"}},
-                    "women_only": {"type": "boolean"},
+                    "title": {"type": "string", "description": "Short name of the meetup."},
+                    "emoji": {"type": "string", "description": "One grapheme. Not spoken in the reply."},
+                    "starts_at": {"type": "string", "description": "RFC3339 UTC, converted from Europe/Warsaw."},
+                    "place_name": {"type": "string", "description": "Public place name. Never a home."},
+                    "kind": {"type": "string", "enum": ["cafe", "park", "hall", "square", "other_public"], "description": "Public kind. Never a home."},
+                    "lat": {"type": "number", "description": "From the person or a tool result for this place."},
+                    "lon": {"type": "number", "description": "From the person or a tool result for this place."},
+                    "capacity": {"type": "integer", "description": "Only if they gave a number."},
+                    "description": {"type": "string", "description": "Only if they gave one."},
+                    "activity_tags": {"type": "array", "items": {"type": "string"}, "description": "English match words, such as walk or coffee."},
+                    "women_only": {"type": "boolean", "description": "True only when they asked for women only."},
                 }),
                 &[
                     "title",
@@ -333,23 +337,35 @@ pub fn specs() -> Result<Vec<ToolDefinition>, Error> {
         ),
         spec(
             ToolName::JoinEvent,
-            "Join an event after the user asked.",
-            schema(json!({"event_id": {"type": "string"}}), &["event_id"]),
+            "Call this only after they asked to join a specific event. event_id must be an id from search_events or list_my_events in this conversation. Success is status going. If the result has error, including event is full, the join did not happen. Say that in a sentence.",
+            schema(
+                json!({"event_id": {"type": "string", "description": "id from search_events or list_my_events."}}),
+                &["event_id"],
+            ),
         ),
         spec(
             ToolName::CancelAttendance,
-            "Cancel the user's attendance after they asked.",
-            schema(json!({"event_id": {"type": "string"}}), &["event_id"]),
+            "Call this only after they asked to cancel their place. event_id comes from list_my_events or search_events. If the result has error, it was not cancelled. Say that.",
+            schema(
+                json!({"event_id": {"type": "string", "description": "id from list_my_events or search_events."}}),
+                &["event_id"],
+            ),
         ),
         spec(
             ToolName::CompleteAttendance,
-            "Mark the user's attendance complete after they asked.",
-            schema(json!({"event_id": {"type": "string"}}), &["event_id"]),
+            "Call this only after they said they went, or asked to mark it done. event_id comes from their events. If the result has error, it was not marked done. Say that.",
+            schema(
+                json!({"event_id": {"type": "string", "description": "id from list_my_events."}}),
+                &["event_id"],
+            ),
         ),
         spec(
             ToolName::SearchChatHistory,
-            "Search this user's earlier messages.",
-            schema(json!({"query": {"type": "string"}}), &["query"]),
+            "Call this only when they refer to something said earlier that is not in the recent turns or the summary. query is their words. Do not use it for innovations or events.",
+            schema(
+                json!({"query": {"type": "string", "description": "Words from the earlier conversation."}}),
+                &["query"],
+            ),
         ),
     ])
 }
@@ -862,6 +878,31 @@ mod tests {
             assert!(ToolName::parse(name.as_str()).is_some());
         }
         assert!(ToolName::parse("drop_table").is_none());
+    }
+
+    #[test]
+    fn specs_match_the_filters_the_ranker_actually_runs() {
+        let specs = specs().unwrap();
+        let by_name = |name: &str| specs.iter().find(|tool| tool.name == name).expect(name);
+        assert!(by_name("remember").description.contains("long_term"));
+        assert!(by_name("remember").description.contains("samotn"));
+        assert!(by_name("remember").description.contains("towarzystwo"));
+        assert!(by_name("set_profile").description.contains("65+"));
+        assert!(by_name("list_my_events").description.contains("going"));
+        assert!(by_name("create_event").description.contains("lon, not lng"));
+        assert!(by_name("set_profile").description.contains("wheelchair"));
+        assert!(by_name("search_events").description.contains("50.0683"));
+        assert!(by_name("search_events").description.contains("19.9917"));
+        assert!(by_name("search_knowledge").description.contains("page_url"));
+        let create = by_name("create_event");
+        let kinds: Vec<&str> = create.parameters["properties"]["kind"]["enum"]
+            .as_array()
+            .expect("kind enum")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(!kinds.contains(&"not_public"), "{kinds:?}");
+        assert!(create.description.contains("RFC3339"));
     }
 
     #[test]
