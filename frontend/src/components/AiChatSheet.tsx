@@ -19,6 +19,8 @@ import {
   type AudioPlayer,
   type AudioRecorder,
 } from "expo-audio";
+import * as Clipboard from "expo-clipboard";
+import * as Linking from "expo-linking";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import {
@@ -922,37 +924,9 @@ export function AiChatSheet({
                 Messages you send show up here.
               </Text>
             ) : (
-              messages.map((message) => {
-                const assistant = message.role === "assistant";
-                return (
-                  <View
-                    key={message.id}
-                    accessible
-                    accessibilityRole="text"
-                    accessibilityLabel={
-                      message.pending
-                        ? "Assistant is thinking"
-                        : assistant
-                          ? `Assistant said: ${message.text}`
-                          : `You said: ${message.text}`
-                    }
-                    accessibilityLiveRegion={message.pending ? "polite" : undefined}
-                    style={[styles.bubble, assistant && styles.assistantBubble]}
-                  >
-                    <Text
-                      style={[
-                        styles.bubbleText,
-                        assistant && styles.assistantText,
-                        message.pending && styles.pendingText,
-                      ]}
-                      importantForAccessibility="no"
-                      accessibilityElementsHidden
-                    >
-                      {message.text}
-                    </Text>
-                  </View>
-                );
-              })
+              messages.map((message) => (
+                <ChatBubble key={message.id} message={message} />
+              ))
             )}
           </ScrollView>
         ) : null}
@@ -1148,6 +1122,191 @@ export function AiChatSheet({
   );
 }
 
+type MessagePart =
+  | { kind: "text"; text: string }
+  | { kind: "link"; label: string; href: string };
+
+function ChatBubble({ message }: { message: ChatMessage }) {
+  const assistant = message.role === "assistant";
+  const parts =
+    assistant && !message.pending ? linkParts(message.text) : [{ kind: "text" as const, text: message.text }];
+  const links = parts.filter((part) => part.kind === "link");
+  const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (copiedTimer.current != null) clearTimeout(copiedTimer.current);
+    },
+    [],
+  );
+
+  async function copyMessage() {
+    let saved = false;
+    try {
+      saved = await Clipboard.setStringAsync(message.text);
+    } catch {
+      saved = false;
+    }
+    if (!saved) {
+      AccessibilityInfo.announceForAccessibility("Could not copy the message.");
+      return;
+    }
+    setCopied(true);
+    AccessibilityInfo.announceForAccessibility("Copied");
+    if (copiedTimer.current != null) clearTimeout(copiedTimer.current);
+    copiedTimer.current = setTimeout(() => setCopied(false), 2000);
+  }
+
+  const spoken = message.pending
+    ? "Assistant is thinking"
+    : assistant
+      ? `Assistant said: ${message.text}`
+      : `You said: ${message.text}`;
+
+  const sheetFill = assistant ? colors.white : colors.quaternary;
+
+  return (
+    <View
+      accessibilityLiveRegion={message.pending ? "polite" : undefined}
+      style={[styles.bubble, assistant && styles.assistantBubble, !message.pending && styles.bubbleWithCopy]}
+    >
+      <Text
+        style={[
+          styles.bubbleText,
+          !message.pending && styles.bubbleTextBesideCopy,
+          assistant && styles.assistantText,
+          message.pending && styles.pendingText,
+        ]}
+        accessibilityRole="text"
+        accessibilityLabel={spoken}
+        accessibilityActions={links.map((link, index) => ({
+          name: `open-link-${index}`,
+          label: `Open ${link.label}`,
+        }))}
+        onAccessibilityAction={(event) => {
+          const index = Number(event.nativeEvent.actionName.replace("open-link-", ""));
+          const link = links[index];
+          if (link) void openExternalLink(link.href);
+        }}
+      >
+        {parts.map((part, index) =>
+          part.kind === "text" ? (
+            <Text key={`text-${index}`}>{part.text}</Text>
+          ) : (
+            <Text
+              key={`link-${index}`}
+              accessibilityRole="link"
+              accessibilityLabel={part.label}
+              accessibilityHint="Opens in your browser"
+              style={styles.link}
+              onPress={() => void openExternalLink(part.href)}
+            >
+              {part.label}
+            </Text>
+          ),
+        )}
+      </Text>
+      {message.pending ? null : (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={copied ? "Message copied" : "Copy message"}
+          accessibilityHint="Copies this message."
+          onPress={() => void copyMessage()}
+          hitSlop={space.sm}
+          style={({ pressed }) => [styles.copyButton, pressed && styles.pressed]}
+        >
+          {({ pressed }) => (
+            <CopyGlyph copied={copied} fill={pressed ? colors.line : sheetFill} />
+          )}
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
+function linkParts(source: string): MessagePart[] {
+  const parts: MessagePart[] = [];
+  const pattern = /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|https?:\/\/[^\s<>]+|www\.[^\s<>]+/gi;
+  let cursor = 0;
+  for (const match of source.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    if (index > cursor) {
+      parts.push({ kind: "text", text: source.slice(cursor, index) });
+    }
+    if (match[1] != null && match[2] != null) {
+      const href = match[2];
+      if (isHttpUrl(href)) {
+        parts.push({ kind: "link", label: match[1], href });
+      } else {
+        parts.push({ kind: "text", text: match[0] });
+      }
+      cursor = index + match[0].length;
+      continue;
+    }
+    const { href: trimmed, trailing } = splitTrailing(match[0]);
+    const href = /^www\./i.test(trimmed) ? `https://${trimmed}` : trimmed;
+    if (isHttpUrl(href)) {
+      parts.push({ kind: "link", label: trimmed, href });
+      if (trailing) parts.push({ kind: "text", text: trailing });
+    } else {
+      parts.push({ kind: "text", text: match[0] });
+    }
+    cursor = index + match[0].length;
+  }
+  if (cursor < source.length) {
+    parts.push({ kind: "text", text: source.slice(cursor) });
+  }
+  return parts;
+}
+
+function splitTrailing(raw: string): { href: string; trailing: string } {
+  let end = raw.length;
+  while (end > 0) {
+    const char = raw[end - 1] ?? "";
+    if (char === ")") {
+      const head = raw.slice(0, end);
+      const opens = countChar(head, "(");
+      const closes = countChar(head, ")");
+      if (closes <= opens) break;
+      end -= 1;
+      continue;
+    }
+    if (".,;:!]\"'".includes(char)) {
+      end -= 1;
+      continue;
+    }
+    break;
+  }
+  return { href: raw.slice(0, end), trailing: raw.slice(end) };
+}
+
+function countChar(value: string, char: string): number {
+  let count = 0;
+  for (const item of value) {
+    if (item === char) count += 1;
+  }
+  return count;
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (url.protocol === "http:" || url.protocol === "https:") && url.hostname.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function openExternalLink(url: string) {
+  if (!isHttpUrl(url)) return;
+  try {
+    await Linking.openURL(url);
+  } catch {
+    AccessibilityInfo.announceForAccessibility("Could not open the link.");
+  }
+}
+
 function historyToMessage(message: HistoryMessage): ChatMessage {
   return {
     id: message.id,
@@ -1171,6 +1330,26 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, milliseconds);
   });
+}
+
+function CopyGlyph({ copied, fill }: { copied: boolean; fill: string }) {
+  return (
+    <View
+      pointerEvents="none"
+      importantForAccessibility="no"
+      accessibilityElementsHidden
+      style={styles.copyIcon}
+    >
+      {copied ? (
+        <View style={styles.copiedMark} />
+      ) : (
+        <>
+          <View style={styles.copySheetBack} />
+          <View style={[styles.copySheetFront, { backgroundColor: fill }]} />
+        </>
+      )}
+    </View>
+  );
 }
 
 function ChevronGlyph({ expanded }: { expanded: boolean }) {
@@ -1331,11 +1510,21 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.line,
   },
+  bubbleWithCopy: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    paddingTop: space.xs,
+    paddingEnd: space.xs,
+  },
   bubbleText: {
     color: colors.ink,
     fontFamily: fonts.regular,
     fontSize: 16,
     lineHeight: 22,
+  },
+  bubbleTextBesideCopy: {
+    flexShrink: 1,
+    paddingTop: space.sm,
   },
   assistantText: {
     color: colors.ink,
@@ -1343,6 +1532,52 @@ const styles = StyleSheet.create({
   pendingText: {
     color: colors.inkMuted,
     fontStyle: "italic",
+  },
+  link: {
+    color: colors.ink,
+    fontFamily: fonts.semibold,
+    textDecorationLine: "underline",
+  },
+  copyButton: {
+    width: 44,
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 22,
+  },
+  copyIcon: {
+    width: 16,
+    height: 16,
+  },
+  copySheetBack: {
+    position: "absolute",
+    top: 0,
+    start: 0,
+    width: 11,
+    height: 11,
+    borderWidth: 1.5,
+    borderColor: colors.ink,
+    borderRadius: 2,
+  },
+  copySheetFront: {
+    position: "absolute",
+    top: 4,
+    start: 4,
+    width: 11,
+    height: 11,
+    borderWidth: 1.5,
+    borderColor: colors.ink,
+    borderRadius: 2,
+  },
+  copiedMark: {
+    width: 6,
+    height: 11,
+    marginTop: 1,
+    marginStart: 5,
+    borderBottomWidth: 2,
+    borderRightWidth: 2,
+    borderColor: colors.ink,
+    transform: [{ rotate: "40deg" }],
   },
   pendingStatus: {
     color: colors.inkMuted,
