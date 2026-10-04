@@ -1,4 +1,4 @@
-import { API_BASE_URL, SIGN_UP_BODY } from "./config";
+import { API_BASE_URL } from "./config";
 import { clearStoredSession, loadStoredSession, saveStoredSession } from "./session";
 import {
   ApiError,
@@ -12,49 +12,39 @@ import {
   type TurnView,
 } from "./types";
 
-export async function signUp(): Promise<Session> {
-  const response = await fetch(`${API_BASE_URL}/v1/users`, {
+export async function signUp(email: string, password: string): Promise<Session> {
+  const response = await fetch(`${API_BASE_URL}/v1/auth/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(SIGN_UP_BODY),
+    body: JSON.stringify({
+      email: email.trim(),
+      password,
+      display_name: displayNameFromEmail(email),
+      locale: "en",
+    }),
   });
   const session = await readJson(response, 200, parseSession);
   await saveStoredSession(session);
   return session;
 }
 
-export async function signIn(): Promise<Session> {
-  const stored = await loadStoredSession();
-  const refreshToken = stored?.refresh_token || refreshTokenFromEnv();
-  if (!refreshToken) {
-    throw new Error("Sign up first on this device.");
-  }
-  const refreshed = await postRefresh(refreshToken);
-  const session = stored
-    ? mergeSession(stored, refreshed)
-    : await sessionFromRefresh(refreshed);
+export async function signIn(email: string, password: string): Promise<Session> {
+  const response = await fetch(`${API_BASE_URL}/v1/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email: email.trim(),
+      password,
+    }),
+  });
+  const session = await readJson(response, 200, parseSession);
   await saveStoredSession(session);
   return session;
 }
 
-function refreshTokenFromEnv(): string | null {
-  const token = process.env.EXPO_PUBLIC_REFRESH_TOKEN?.trim() ?? "";
-  return token.length > 0 ? token : null;
-}
-
-async function sessionFromRefresh(refreshed: Refreshed): Promise<Session> {
-  const response = await fetch(`${API_BASE_URL}/v1/me`, {
-    headers: { Authorization: `Bearer ${refreshed.access_token}` },
-  });
-  const me = await readJson(response, 200, parseMeIdentity);
-  return {
-    id: me.id,
-    display_name: me.display_name,
-    access_token: refreshed.access_token,
-    refresh_token: refreshed.refresh_token,
-    access_expires_at: refreshed.access_expires_at,
-    refresh_expires_at: refreshed.refresh_expires_at,
-  };
+function displayNameFromEmail(email: string): string {
+  const local = email.trim().split("@")[0]?.trim() ?? "";
+  return local.length > 0 ? local.slice(0, 80) : "Tester";
 }
 
 export function getMyEvents(accessToken: string): Promise<MyEvent[]> {
@@ -303,6 +293,7 @@ async function postRefresh(refreshToken: string): Promise<Refreshed> {
 function mergeSession(stored: Session, refreshed: Refreshed): Session {
   return {
     id: stored.id,
+    email: stored.email,
     display_name: stored.display_name,
     access_token: refreshed.access_token,
     refresh_token: refreshed.refresh_token,
@@ -390,21 +381,11 @@ async function drain(response: Response): Promise<void> {
   }
 }
 
-function parseMeIdentity(
-  body: unknown,
-  status: number,
-): { id: string; display_name: string } {
-  const record = expectRecord(body, status);
-  return {
-    id: expectString(record, "id", status),
-    display_name: expectString(record, "display_name", status),
-  };
-}
-
 function parseSession(body: unknown, status: number): Session {
   const record = expectRecord(body, status);
   return {
     id: expectString(record, "id", status),
+    email: expectString(record, "email", status),
     display_name: expectString(record, "display_name", status),
     access_token: expectString(record, "access_token", status),
     refresh_token: expectString(record, "refresh_token", status),

@@ -8,6 +8,7 @@ const SESSION_META_KEY = "styrta.session_meta";
 
 type SessionMeta = {
   id: string;
+  email: string;
   display_name: string;
   access_expires_at: string;
   refresh_expires_at: string;
@@ -28,6 +29,7 @@ export async function loadStoredSession(): Promise<Session | null> {
   }
   return {
     id: meta.id,
+    email: meta.email,
     display_name: meta.display_name,
     access_token: accessToken,
     refresh_token: refreshToken,
@@ -39,6 +41,7 @@ export async function loadStoredSession(): Promise<Session | null> {
 export async function saveStoredSession(session: Session): Promise<void> {
   const meta: SessionMeta = {
     id: session.id,
+    email: session.email,
     display_name: session.display_name,
     access_expires_at: session.access_expires_at,
     refresh_expires_at: session.refresh_expires_at,
@@ -70,11 +73,13 @@ function parseMeta(raw: string): SessionMeta | null {
   }
   const record = parsed as Record<string, unknown>;
   const id = record.id;
+  const email = record.email;
   const displayName = record.display_name;
   const accessExpiresAt = record.access_expires_at;
   const refreshExpiresAt = record.refresh_expires_at;
   if (
     typeof id !== "string" ||
+    typeof email !== "string" ||
     typeof displayName !== "string" ||
     typeof accessExpiresAt !== "string" ||
     typeof refreshExpiresAt !== "string" ||
@@ -85,6 +90,7 @@ function parseMeta(raw: string): SessionMeta | null {
   }
   return {
     id,
+    email,
     display_name: displayName,
     access_expires_at: accessExpiresAt,
     refresh_expires_at: refreshExpiresAt,

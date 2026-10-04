@@ -245,37 +245,43 @@ export function MapScreen() {
     setEventsVersion((current) => current + 1);
   }, []);
 
-  const runAuth = useCallback(async (action: "sign-in" | "sign-up") => {
-    if (authLock.current) {
-      return;
-    }
-    authLock.current = true;
-    setAuthBusy(true);
-    setAuthError(null);
-    AccessibilityInfo.announceForAccessibility(
-      action === "sign-in" ? "Signing in" : "Signing up",
-    );
-    try {
-      const next = action === "sign-in" ? await requestSignIn() : await requestSignUp();
-      if (!aliveRef.current) {
+  const runAuth = useCallback(
+    async (action: "sign-in" | "sign-up", email: string, password: string) => {
+      if (authLock.current) {
         return;
       }
-      setSession(next);
-      AccessibilityInfo.announceForAccessibility("Signed in");
-    } catch (error) {
-      if (!aliveRef.current) {
-        return;
+      authLock.current = true;
+      setAuthBusy(true);
+      setAuthError(null);
+      AccessibilityInfo.announceForAccessibility(
+        action === "sign-in" ? "Signing in" : "Signing up",
+      );
+      try {
+        const next =
+          action === "sign-in"
+            ? await requestSignIn(email, password)
+            : await requestSignUp(email, password);
+        if (!aliveRef.current) {
+          return;
+        }
+        setSession(next);
+        AccessibilityInfo.announceForAccessibility("Signed in");
+      } catch (error) {
+        if (!aliveRef.current) {
+          return;
+        }
+        const message = authErrorMessage(error);
+        setAuthError(message);
+        AccessibilityInfo.announceForAccessibility(message);
+      } finally {
+        authLock.current = false;
+        if (aliveRef.current) {
+          setAuthBusy(false);
+        }
       }
-      const message = readableError(error);
-      setAuthError(message);
-      AccessibilityInfo.announceForAccessibility(message);
-    } finally {
-      authLock.current = false;
-      if (aliveRef.current) {
-        setAuthBusy(false);
-      }
-    }
-  }, []);
+    },
+    [],
+  );
 
   useEffect(() => {
     aliveRef.current = true;
@@ -640,11 +646,11 @@ export function MapScreen() {
         accessToken={session?.access_token ?? null}
         authBusy={authBusy}
         authError={authError}
-        onSignIn={() => {
-          void runAuth("sign-in");
+        onSignIn={(email, password) => {
+          void runAuth("sign-in", email, password);
         }}
-        onSignUp={() => {
-          void runAuth("sign-up");
+        onSignUp={(email, password) => {
+          void runAuth("sign-up", email, password);
         }}
         onSessionLost={onSessionLost}
         onToolsFinished={refreshEvents}
@@ -789,6 +795,21 @@ function readableError(error: unknown): string {
     return error.message;
   }
   return "Something went wrong.";
+}
+
+function authErrorMessage(error: unknown): string {
+  switch (readableError(error)) {
+    case "email":
+      return "Enter a valid email.";
+    case "password":
+      return "Password must be 8 to 128 characters.";
+    case "email taken":
+      return "That email is already registered.";
+    case "unauthorized":
+      return "Email or password is wrong.";
+    default:
+      return readableError(error);
+  }
 }
 
 function isUnauthorized(error: unknown): boolean {

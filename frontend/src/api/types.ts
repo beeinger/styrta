@@ -1,5 +1,6 @@
 export type Session = {
   id: string;
+  email: string;
   display_name: string;
   access_token: string;
   refresh_token: string;

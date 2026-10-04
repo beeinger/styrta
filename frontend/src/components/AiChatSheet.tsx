@@ -25,8 +25,8 @@ type AiChatSheetProps = {
   accessToken: string | null;
   authBusy: boolean;
   authError: string | null;
-  onSignIn: () => void;
-  onSignUp: () => void;
+  onSignIn: (email: string, password: string) => void;
+  onSignUp: (email: string, password: string) => void;
   onSessionLost: (message: string) => void;
   onToolsFinished: () => void;
   onHeightChange: (height: number) => void;
@@ -40,13 +40,15 @@ type ChatMessage = {
   role: "user" | "assistant";
   text: string;
   local?: boolean;
+  pending?: boolean;
   turnId?: string;
 };
 
 const BAR_HEIGHTS = [7, 13, 19, 13, 7];
 const CARD_PADDING_TOP = 4;
 const POLL_INTERVAL_MS = 700;
-const POLL_DEADLINE_MS = 30_000;
+const POLL_DEADLINE_MS = 180_000;
+const THINKING_LINE = "Thinking...";
 const FAILURE_LINE = "The reply failed.";
 const TIMEOUT_LINE = "The reply did not arrive.";
 
@@ -76,12 +78,18 @@ export function AiChatSheet({
   const onToolsFinishedRef = useRef(onToolsFinished);
   const pendingTurns = useRef(new Set<string>());
   const finishedTurns = useRef(new Set<string>());
+  const repliedTurns = useRef(new Set<string>());
   const pollingTurns = useRef(new Set<string>());
   const onStreamEvent = useRef<(event: ChatStreamEvent) => void>(() => {});
   const onStreamError = useRef<(error: Error) => void>(() => {});
   const [expanded, setExpanded] = useState(true);
   const [draft, setDraft] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [authMode, setAuthMode] = useState<"sign-in" | "sign-up">("sign-in");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authPasswordAgain, setAuthPasswordAgain] = useState("");
+  const [formError, setFormError] = useState<string | null>(null);
   const [chatError, setChatError] = useState<string | null>(null);
   const [keyboardInset, setKeyboardInset] = useState(0);
   const [keyboardOpen, setKeyboardOpen] = useState(false);
@@ -100,15 +108,22 @@ export function AiChatSheet({
     pendingTurns.current.delete(turnId);
   };
 
+  const dropMessage = (id: string) => {
+    setMessages((current) => current.filter((message) => message.id !== id));
+  };
+
   const writeAssistant = (turnId: string, text: string, mode: "append" | "replace") => {
     if (!mountedRef.current) {
       return;
     }
     const id = `assistant-${turnId}`;
     setMessages((current) => {
-      const index = current.findIndex(
+      let index = current.findIndex(
         (message) => message.role === "assistant" && message.turnId === turnId,
       );
+      if (index === -1) {
+        index = current.findIndex((message) => message.pending && message.turnId == null);
+      }
       if (index === -1) {
         return [...current, { id, role: "assistant", text, turnId }];
       }
@@ -116,10 +131,15 @@ export function AiChatSheet({
       if (!existing) {
         return current;
       }
+      const base = existing.pending ? "" : existing.text;
       const next = current.slice();
       next[index] = {
         ...existing,
-        text: mode === "append" ? existing.text + text : text,
+        id,
+        local: false,
+        pending: false,
+        turnId,
+        text: mode === "append" ? base + text : text,
       };
       return next;
     });
@@ -136,6 +156,7 @@ export function AiChatSheet({
     pollingTurns.current.add(turnId);
     const started = Date.now();
     void (async () => {
+      let lastError: unknown = null;
       try {
         while (Date.now() - started < POLL_DEADLINE_MS) {
           if (
@@ -145,24 +166,41 @@ export function AiChatSheet({
           ) {
             return;
           }
-          const turn = await getTurn(token, turnId);
-          if (
-            !mountedRef.current ||
-            accessTokenRef.current !== token ||
-            finishedTurns.current.has(turnId)
-          ) {
-            return;
-          }
-          if (turn.status === "done") {
-            finishTurn(turnId);
-            writeAssistant(turnId, turn.reply_text ?? "", "replace");
-            return;
-          }
-          if (turn.status === "failed") {
-            finishTurn(turnId);
-            writeAssistant(turnId, FAILURE_LINE, "replace");
-            AccessibilityInfo.announceForAccessibility(FAILURE_LINE);
-            return;
+          try {
+            const turn = await getTurn(token, turnId);
+            if (
+              !mountedRef.current ||
+              accessTokenRef.current !== token ||
+              finishedTurns.current.has(turnId)
+            ) {
+              return;
+            }
+            lastError = null;
+            if (turn.status === "done") {
+              finishTurn(turnId);
+              repliedTurns.current.add(turnId);
+              writeAssistant(turnId, turn.reply_text ?? "", "replace");
+              return;
+            }
+            if (turn.status === "failed") {
+              finishTurn(turnId);
+              writeAssistant(turnId, FAILURE_LINE, "replace");
+              AccessibilityInfo.announceForAccessibility(FAILURE_LINE);
+              return;
+            }
+          } catch (error) {
+            if (
+              !mountedRef.current ||
+              accessTokenRef.current !== token ||
+              finishedTurns.current.has(turnId)
+            ) {
+              return;
+            }
+            if (isUnauthorized(error)) {
+              onSessionLostRef.current(readableError(error));
+              return;
+            }
+            lastError = error;
           }
           await delay(POLL_INTERVAL_MS);
         }
@@ -174,22 +212,10 @@ export function AiChatSheet({
           return;
         }
         finishTurn(turnId);
-        writeAssistant(turnId, TIMEOUT_LINE, "replace");
-        AccessibilityInfo.announceForAccessibility(TIMEOUT_LINE);
-      } catch (error) {
-        if (
-          !mountedRef.current ||
-          accessTokenRef.current !== token ||
-          finishedTurns.current.has(turnId)
-        ) {
+        if (repliedTurns.current.has(turnId)) {
           return;
         }
-        if (isUnauthorized(error)) {
-          onSessionLostRef.current(readableError(error));
-          return;
-        }
-        const message = readableError(error);
-        finishTurn(turnId);
+        const message = lastError == null ? TIMEOUT_LINE : readableError(lastError);
         writeAssistant(turnId, message, "replace");
         AccessibilityInfo.announceForAccessibility(message);
       } finally {
@@ -207,10 +233,14 @@ export function AiChatSheet({
         if (finishedTurns.current.has(event.turn_id)) {
           return;
         }
+        if (event.text.length > 0) {
+          repliedTurns.current.add(event.turn_id);
+        }
         writeAssistant(event.turn_id, event.text, "append");
         return;
       case "reply.done":
         finishTurn(event.turn_id);
+        repliedTurns.current.add(event.turn_id);
         writeAssistant(event.turn_id, event.text, "replace");
         return;
       case "turn.failed":
@@ -305,6 +335,7 @@ export function AiChatSheet({
   useEffect(() => {
     pendingTurns.current.clear();
     finishedTurns.current.clear();
+    repliedTurns.current.clear();
     if (!accessToken) {
       setMessages([]);
       setChatError(null);
@@ -382,28 +413,49 @@ export function AiChatSheet({
       text,
       local: true,
     };
-    setMessages((current) => [...current, message]);
+    const thinkingId = `thinking-${message.id}`;
+    setMessages((current) => [
+      ...current,
+      message,
+      {
+        id: thinkingId,
+        role: "assistant",
+        text: THINKING_LINE,
+        pending: true,
+        local: true,
+      },
+    ]);
     setDraft("");
     setChatError(null);
-    AccessibilityInfo.announceForAccessibility("Message sent");
-    void deliverMessage(token, text);
+    AccessibilityInfo.announceForAccessibility("Message sent. Thinking.");
+    void deliverMessage(token, text, thinkingId);
   };
 
-  async function deliverMessage(token: string, text: string) {
+  async function deliverMessage(token: string, text: string, thinkingId: string) {
     try {
       const accepted = await postMessage(token, text);
       if (!mountedRef.current || accessTokenRef.current !== token) {
         return;
       }
       if (finishedTurns.current.has(accepted.turn_id)) {
+        dropMessage(thinkingId);
         return;
       }
+      const assistantId = `assistant-${accepted.turn_id}`;
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === thinkingId
+            ? { ...message, id: assistantId, turnId: accepted.turn_id }
+            : message,
+        ),
+      );
       pendingTurns.current.add(accepted.turn_id);
       pollTurn(accepted.turn_id);
     } catch (error) {
       if (!mountedRef.current || accessTokenRef.current !== token) {
         return;
       }
+      dropMessage(thinkingId);
       if (isUnauthorized(error)) {
         onSessionLostRef.current(readableError(error));
         return;
@@ -413,6 +465,40 @@ export function AiChatSheet({
       AccessibilityInfo.announceForAccessibility(message);
     }
   }
+
+  const awaitingReply = messages.some((message) => message.pending);
+  const submitAuth = () => {
+    const email = authEmail.trim();
+    const password = authPassword;
+    if (!email) {
+      setFormError("Enter an email.");
+      AccessibilityInfo.announceForAccessibility("Enter an email.");
+      return;
+    }
+    if (authMode === "sign-up") {
+      if (password !== authPasswordAgain) {
+        setFormError("Hasła nie są takie same.");
+        AccessibilityInfo.announceForAccessibility("Hasła nie są takie same.");
+        return;
+      }
+      if (password.length < 8 || password.length > 128) {
+        const message = "Password must be 8 to 128 characters.";
+        setFormError(message);
+        AccessibilityInfo.announceForAccessibility(message);
+        return;
+      }
+      setFormError(null);
+      onSignUp(email, password);
+      return;
+    }
+    if (!password) {
+      setFormError("Enter a password.");
+      AccessibilityInfo.announceForAccessibility("Enter a password.");
+      return;
+    }
+    setFormError(null);
+    onSignIn(email, password);
+  };
 
   const bottomInset = keyboardInset > 0 ? 12 : Math.max(insets.bottom, 12);
 
@@ -509,14 +595,21 @@ export function AiChatSheet({
                     accessible
                     accessibilityRole="text"
                     accessibilityLabel={
-                      assistant
-                        ? `Assistant said: ${message.text}`
-                        : `You said: ${message.text}`
+                      message.pending
+                        ? "Assistant is thinking"
+                        : assistant
+                          ? `Assistant said: ${message.text}`
+                          : `You said: ${message.text}`
                     }
+                    accessibilityLiveRegion={message.pending ? "polite" : undefined}
                     style={[styles.bubble, assistant && styles.assistantBubble]}
                   >
                     <Text
-                      style={[styles.bubbleText, assistant && styles.assistantText]}
+                      style={[
+                        styles.bubbleText,
+                        assistant && styles.assistantText,
+                        message.pending && styles.pendingText,
+                      ]}
                       importantForAccessibility="no"
                       accessibilityElementsHidden
                     >
@@ -537,6 +630,15 @@ export function AiChatSheet({
           {signedIn ? (
             <>
               {chatError ? <Text style={styles.errorText}>{chatError}</Text> : null}
+              {!expanded && awaitingReply ? (
+                <Text
+                  style={styles.pendingStatus}
+                  accessibilityRole="text"
+                  accessibilityLiveRegion="polite"
+                >
+                  {THINKING_LINE}
+                </Text>
+              ) : null}
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Tap to speak"
@@ -575,14 +677,63 @@ export function AiChatSheet({
             </>
           ) : (
             <View style={styles.authActions}>
-              {authError ? <Text style={styles.errorText}>{authError}</Text> : null}
+              {authError || formError ? (
+                <Text style={styles.errorText} accessibilityRole="alert">
+                  {formError ?? authError}
+                </Text>
+              ) : null}
+              <Text style={styles.fieldLabel}>email</Text>
+              <TextInput
+                value={authEmail}
+                onChangeText={setAuthEmail}
+                editable={!authBusy}
+                autoCapitalize="none"
+                autoCorrect={false}
+                autoComplete="email"
+                keyboardType="email-address"
+                textContentType="emailAddress"
+                accessibilityLabel="email"
+                style={styles.input}
+                maxFontSizeMultiplier={2}
+              />
+              <Text style={styles.fieldLabel}>hasło</Text>
+              <TextInput
+                value={authPassword}
+                onChangeText={setAuthPassword}
+                editable={!authBusy}
+                secureTextEntry
+                autoCapitalize="none"
+                autoCorrect={false}
+                autoComplete={authMode === "sign-up" ? "new-password" : "password"}
+                textContentType={authMode === "sign-up" ? "newPassword" : "password"}
+                accessibilityLabel="hasło"
+                style={styles.input}
+                maxFontSizeMultiplier={2}
+              />
+              {authMode === "sign-up" ? (
+                <>
+                  <Text style={styles.fieldLabel}>powtórz hasło</Text>
+                  <TextInput
+                    value={authPasswordAgain}
+                    onChangeText={setAuthPasswordAgain}
+                    editable={!authBusy}
+                    secureTextEntry
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    autoComplete="new-password"
+                    textContentType="newPassword"
+                    accessibilityLabel="powtórz hasło"
+                    style={styles.input}
+                    maxFontSizeMultiplier={2}
+                  />
+                </>
+              ) : null}
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="Sign In"
-                accessibilityHint="Signs in with the account saved on this device."
+                accessibilityLabel={authMode === "sign-up" ? "Sign Up" : "Sign In"}
                 accessibilityState={{ disabled: authBusy, busy: authBusy }}
                 disabled={authBusy}
-                onPress={onSignIn}
+                onPress={submitAuth}
                 style={({ pressed }) => [
                   styles.authButton,
                   authBusy && styles.authButtonDisabled,
@@ -595,29 +746,29 @@ export function AiChatSheet({
                   importantForAccessibility="no"
                   accessibilityElementsHidden
                 >
-                  Sign In
+                  {authMode === "sign-up" ? "Sign Up" : "Sign In"}
                 </Text>
               </Pressable>
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="Sign Up"
-                accessibilityHint="Creates a new account on this device."
-                accessibilityState={{ disabled: authBusy, busy: authBusy }}
+                accessibilityLabel={
+                  authMode === "sign-up"
+                    ? "Already have an account? Sign in"
+                    : "Need an account? Sign up"
+                }
                 disabled={authBusy}
-                onPress={onSignUp}
-                style={({ pressed }) => [
-                  styles.authButton,
-                  authBusy && styles.authButtonDisabled,
-                  pressed && !authBusy && styles.pressed,
-                ]}
+                onPress={() => {
+                  setAuthMode((current) => (current === "sign-in" ? "sign-up" : "sign-in"));
+                  setAuthPassword("");
+                  setAuthPasswordAgain("");
+                  setFormError(null);
+                }}
+                style={styles.authSwitch}
               >
-                <Text
-                  style={styles.authLabel}
-                  maxFontSizeMultiplier={1.8}
-                  importantForAccessibility="no"
-                  accessibilityElementsHidden
-                >
-                  Sign Up
+                <Text style={styles.authSwitchLabel} maxFontSizeMultiplier={1.8}>
+                  {authMode === "sign-up"
+                    ? "Already have an account? Sign in"
+                    : "Need an account? Sign up"}
                 </Text>
               </Pressable>
             </View>
@@ -764,6 +915,18 @@ const styles = StyleSheet.create({
   assistantText: {
     color: "#1C1C1E",
   },
+  pendingText: {
+    color: "#8E8E93",
+    fontStyle: "italic",
+  },
+  pendingStatus: {
+    color: "#8E8E93",
+    fontSize: 16,
+    fontStyle: "italic",
+    lineHeight: 22,
+    textAlign: "center",
+    marginBottom: 8,
+  },
   speak: {
     minHeight: 52,
     flexDirection: "row",
@@ -809,6 +972,12 @@ const styles = StyleSheet.create({
   authActions: {
     gap: 10,
   },
+  fieldLabel: {
+    color: "#1C1C1E",
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: "600",
+  },
   authButton: {
     minHeight: 52,
     alignItems: "center",
@@ -827,6 +996,17 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: "600",
     lineHeight: 22,
+  },
+  authSwitch: {
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  authSwitchLabel: {
+    color: "#3A3A3C",
+    fontSize: 15,
+    lineHeight: 20,
+    textAlign: "center",
   },
   errorText: {
     color: "#1C1C1E",
