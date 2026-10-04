@@ -37,6 +37,7 @@ import { chatCornerRadius, colors, fonts, space } from "../theme";
 
 type AiChatSheetProps = {
   accessToken: string | null;
+  userNick: string;
   authBusy: boolean;
   authError: string | null;
   onSignIn: (email: string, password: string) => void;
@@ -72,6 +73,7 @@ const MIN_CLIP_MS = 400;
 
 export function AiChatSheet({
   accessToken,
+  userNick,
   authBusy,
   authError,
   onSignIn,
@@ -112,6 +114,7 @@ export function AiChatSheet({
   const [voiceMuted, setVoiceMuted] = useState(false);
   const [draft, setDraft] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [historyReady, setHistoryReady] = useState(false);
   const [authMode, setAuthMode] = useState<"sign-in" | "sign-up">("sign-in");
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
@@ -480,6 +483,7 @@ export function AiChatSheet({
     replyPlayer.current = null;
     if (!accessToken) {
       setMessages([]);
+      setHistoryReady(false);
       setChatError(null);
       setDraft("");
       setListening(false);
@@ -489,6 +493,7 @@ export function AiChatSheet({
     }
     const token = accessToken;
     let cancelled = false;
+    setHistoryReady(false);
     void listMessages(token)
       .then((history) => {
         if (cancelled || !mountedRef.current) {
@@ -510,6 +515,11 @@ export function AiChatSheet({
         const message = readableError(error);
         setChatError(message);
         AccessibilityInfo.announceForAccessibility(message);
+      })
+      .finally(() => {
+        if (!cancelled && mountedRef.current) {
+          setHistoryReady(true);
+        }
       });
     return () => {
       cancelled = true;
@@ -955,18 +965,21 @@ export function AiChatSheet({
           <ScrollView
             ref={transcriptRef}
             style={styles.transcript}
-            contentContainerStyle={[
-              styles.transcriptContent,
-              messages.length === 0 && styles.transcriptEmpty,
-            ]}
+            contentContainerStyle={styles.transcriptContent}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode="interactive"
             accessibilityLabel="Conversation"
           >
             {messages.length === 0 ? (
-              <Text style={styles.empty}>
-                Messages you send show up here.
-              </Text>
+              historyReady ? (
+                <ChatBubble
+                  message={{
+                    id: "welcome",
+                    role: "assistant",
+                    text: welcomeLine(userNick),
+                  }}
+                />
+              ) : null
             ) : (
               messages.map((message) => (
                 <ChatBubble key={message.id} message={message} />
@@ -1169,6 +1182,12 @@ export function AiChatSheet({
 type MessagePart =
   | { kind: "text"; text: string }
   | { kind: "link"; label: string; href: string };
+
+function welcomeLine(userNick: string): string {
+  const nick = userNick.trim();
+  const greeting = nick.length > 0 ? `Witam na Styrcie ${nick}!` : "Witam na Styrcie!";
+  return `${greeting} Ja jestem Jadzia i chętnie pomogę z rozwiązaniem Twoich problemów lub znalezieniem spotkań towarzyskich w okolicy.`;
+}
 
 function ChatBubble({ message }: { message: ChatMessage }) {
   const assistant = message.role === "assistant";
@@ -1532,17 +1551,6 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
     gap: space.sm,
     paddingBottom: space.md,
-  },
-  transcriptEmpty: {
-    justifyContent: "center",
-  },
-  empty: {
-    color: colors.ink,
-    fontFamily: fonts.regular,
-    fontSize: 16,
-    lineHeight: 22,
-    textAlign: "center",
-    paddingHorizontal: space.md,
   },
   bubble: {
     alignSelf: "flex-end",

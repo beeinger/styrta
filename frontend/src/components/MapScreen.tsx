@@ -649,6 +649,7 @@ export function MapScreen() {
       ) : null}
       <AiChatSheet
         accessToken={session?.access_token ?? null}
+        userNick={session?.display_name ?? ""}
         authBusy={authBusy}
         authError={authError}
         onSignIn={(email, password) => {
