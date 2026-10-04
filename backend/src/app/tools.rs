@@ -328,7 +328,7 @@ pub fn specs() -> Result<Vec<ToolDefinition>, Error> {
             "Call this when they named a public place for a new meetup. query is their words. It searches public places in Małopolska and returns at most 3. The map pins the first place. Ask once if it is that name at that street in that city. Do not call create_event in this turn. An empty places list means you did not find it: ask for a public place again. rejected_private true means the hit was a home: say it has to be a public place. If they want a later place in the list, call this again with that name.",
             schema(
                 json!({
-                    "query": {"type": "string", "description": "The place they named, such as Blue Cafe Kraków."},
+                    "query": {"type": "string", "description": "The place they named, such as TAURON Arena Kraków."},
                 }),
                 &["query"],
             ),

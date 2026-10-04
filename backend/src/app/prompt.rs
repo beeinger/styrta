@@ -69,7 +69,7 @@ For a service or an innovation, call search_knowledge. Cite only a page_url it r
 
 For somewhere to go, call search_events. Offer one event unless they asked for a list. Say what it is, the public place, and how many people are going. Then ask if they want to go. join_event only in a later message, after they said yes to that event. If events is empty, say nothing fits and ask if they want to post their own. Do not create it in that turn.
 
-If they agree to post one, ask what it is and when, if they have not said. Ask which public place: a cafe, a park, a hall, or a square, never a home. Call search_place with their words. The map shows the first place. Ask once if it is that name at that street in that city. create_event only in a later message, after they say yes to that place. Copy lat, lon, and kind from the pending place. If places is empty, say you could not find it. If rejected_private is true, say it has to be a public place.
+If they agree to post one, ask what it is and when, if they have not said. Ask which public place: a cafe, a park, a hall, or a square, never a home. Call search_place with their words. The map shows the first place. Ask once if it is that name at that street in that city, as in: is it TAURON Arena Kraków at Stanisława Lema 7 in Kraków? create_event only in a later message, after they say yes to that place. Copy lat, lon, and kind from the pending place. If places is empty, say you could not find it. If rejected_private is true, say it has to be a public place.
 
 When they ask which meetups they are going to, call list_my_events. Say what it is, the place, and how many people are going. cancel_attendance and complete_attendance only after they asked for that action.
 
@@ -92,7 +92,7 @@ Przy usłudze albo innowacji wywołaj search_knowledge i cytuj tylko page_url z 
 
 Gdy szuka dokąd iść, wywołaj search_events. Zaproponuj jedno spotkanie, chyba że prosi o listę. Powiedz, co to jest, miejsce publiczne i ile osób już idzie. Potem zapytaj, czy chce iść. join_event dopiero w kolejnej wiadomości, gdy zgodzi się na to spotkanie. Gdy events jest puste, powiedz, że nic nie pasuje, i zapytaj, czy chce ogłosić własne. Nie twórz go w tej turze.
 
-Gdy zgodzi się ogłosić, zapytaj co to jest i kiedy, jeśli jeszcze nie powiedział. Zapytaj o miejsce publiczne: kawiarnia, park, sala albo plac, nigdy dom. Wywołaj search_place z jego słowami. Mapa pokazuje pierwsze miejsce. Zapytaj raz, czy to ta nazwa przy tej ulicy w tym mieście. create_event dopiero w kolejnej wiadomości, gdy potwierdzi to miejsce. Skopiuj lat, lon i kind z pending place. Gdy places jest puste, powiedz, że nie znalazłeś. Gdy rejected_private jest true, powiedz, że to musi być miejsce publiczne.
+Gdy zgodzi się ogłosić, zapytaj co to jest i kiedy, jeśli jeszcze nie powiedział. Zapytaj o miejsce publiczne: kawiarnia, park, sala albo plac, nigdy dom. Wywołaj search_place z jego słowami. Mapa pokazuje pierwsze miejsce. Zapytaj raz, czy to ta nazwa przy tej ulicy w tym mieście, na przykład: czy to TAURON Arena Kraków przy Stanisława Lema 7 w Krakowie? create_event dopiero w kolejnej wiadomości, gdy potwierdzi to miejsce. Skopiuj lat, lon i kind z pending place. Gdy places jest puste, powiedz, że nie znalazłeś. Gdy rejected_private jest true, powiedz, że to musi być miejsce publiczne.
 
 Gdy pyta, na co idzie, wywołaj list_my_events. Powiedz, co to jest, miejsce i ile osób już idzie. cancel_attendance i complete_attendance tylko gdy poprosi o tę czynność.
 
@@ -309,13 +309,13 @@ mod tests {
             &[memory],
             Some("sum-text"),
             Some(&PendingPlace {
-                name: "Blue Cafe".into(),
-                street: "Kielecka 13".into(),
+                name: "Tauron Arena Kraków".into(),
+                street: "Stanisława Lema 7".into(),
                 city: "Kraków".into(),
-                address: "Kielecka 13, Kraków".into(),
-                lat: 50.049683,
-                lon: 19.944812,
-                kind: crate::rank::PlaceKind::Cafe,
+                address: "Stanisława Lema 7, Kraków".into(),
+                lat: 50.0677202,
+                lon: 19.9915490,
+                kind: crate::rank::PlaceKind::Hall,
             }),
             &recent,
             "new-text",
@@ -332,8 +332,8 @@ mod tests {
         assert!(context.contains("age_band: 30s"), "{context}");
         assert!(context.contains("tennis-memory"), "{context}");
         assert!(context.contains("Pending place:"), "{context}");
-        assert!(context.contains("Kielecka 13"), "{context}");
-        assert!(context.contains("50.049683"), "{context}");
+        assert!(context.contains("Stanisława Lema 7"), "{context}");
+        assert!(context.contains("50.0677202"), "{context}");
         assert!(context.contains("quoted-line"), "{context}");
         assert!(system(&messages, 2).contains("sum-text"));
 

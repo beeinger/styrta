@@ -243,7 +243,8 @@ fn public_kind(category: &str, kind: &str) -> Option<PlaceKind> {
             "community_centre" | "theatre" | "arts_centre" | "library" | "cinema"
             | "conference_centre" | "events_venue" | "social_facility",
         )
-        | ("building", "civic" | "public") => Some(PlaceKind::Hall),
+        | ("building", "civic" | "public")
+        | ("leisure", "stadium" | "sports_centre" | "sports_hall") => Some(PlaceKind::Hall),
         ("place", "square") | ("leisure", "pitch") => Some(PlaceKind::Square),
         _ => Some(PlaceKind::OtherPublic),
     }
@@ -317,19 +318,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn keeps_a_public_cafe_and_drops_a_house() {
+    fn keeps_the_arena_and_drops_a_house() {
         let body = r#"[
             {
-                "lat": "50.049683",
-                "lon": "19.944812",
-                "category": "amenity",
-                "type": "cafe",
-                "name": "Blue Cafe",
-                "display_name": "Blue Cafe, 13, Kielecka, Kraków, Polska",
+                "lat": "50.0677202",
+                "lon": "19.9915490",
+                "category": "leisure",
+                "type": "stadium",
+                "name": "Tauron Arena Kraków",
+                "display_name": "Tauron Arena Kraków, 7, Stanisława Lema, Czyżyny, Kraków, Polska",
                 "address": {
-                    "amenity": "Blue Cafe",
-                    "house_number": "13",
-                    "road": "Kielecka",
+                    "leisure": "Tauron Arena Kraków",
+                    "house_number": "7",
+                    "road": "Stanisława Lema",
                     "city": "Kraków"
                 }
             },
@@ -346,14 +347,14 @@ mod tests {
         let found = parse_results(body.as_bytes()).unwrap();
         assert!(!found.rejected_private);
         assert_eq!(found.places.len(), 1);
-        let cafe = &found.places[0];
-        assert_eq!(cafe.name, "Blue Cafe");
-        assert_eq!(cafe.street, "Kielecka 13");
-        assert_eq!(cafe.city, "Kraków");
-        assert_eq!(cafe.address, "Kielecka 13, Kraków");
-        assert_eq!(cafe.kind, PlaceKind::Cafe);
-        assert!((cafe.latitude - 50.049683).abs() < 1e-9);
-        assert!((cafe.longitude - 19.944812).abs() < 1e-9);
+        let arena = &found.places[0];
+        assert_eq!(arena.name, "Tauron Arena Kraków");
+        assert_eq!(arena.street, "Stanisława Lema 7");
+        assert_eq!(arena.city, "Kraków");
+        assert_eq!(arena.address, "Stanisława Lema 7, Kraków");
+        assert_eq!(arena.kind, PlaceKind::Hall);
+        assert!((arena.latitude - 50.0677202).abs() < 1e-9);
+        assert!((arena.longitude - 19.9915490).abs() < 1e-9);
     }
 
     #[test]

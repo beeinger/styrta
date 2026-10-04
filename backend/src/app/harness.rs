@@ -1085,15 +1085,15 @@ mod tests {
         }
     }
 
-    fn cafe_hit() -> PlaceHit {
+    fn arena_hit() -> PlaceHit {
         PlaceHit {
-            name: "Blue Cafe".into(),
-            street: "Kielecka 13".into(),
+            name: "Tauron Arena Kraków".into(),
+            street: "Stanisława Lema 7".into(),
             city: "Kraków".into(),
-            address: "Kielecka 13, Kraków".into(),
-            latitude: 50.049683,
-            longitude: 19.944812,
-            kind: PlaceKind::Cafe,
+            address: "Stanisława Lema 7, Kraków".into(),
+            latitude: 50.0677202,
+            longitude: 19.9915490,
+            kind: PlaceKind::Hall,
         }
     }
 
@@ -2196,22 +2196,22 @@ mod tests {
     async fn search_place_pins_a_draft_and_does_not_create_yet() {
         let world = World::new("en", "at the blue cafe");
         world.geocoder.set(PlaceSearch {
-            places: vec![cafe_hit()],
+            places: vec![arena_hit()],
             rejected_private: false,
         });
         world.model.push_tools(vec![tool_call(
             "p",
             "search_place",
-            r#"{"query":"Blue Cafe Kraków"}"#,
+            r#"{"query":"TAURON Arena Kraków"}"#,
         )]);
         world.model.push_tools(vec![tool_call(
             "c",
             "create_event",
-            r#"{"title":"Coffee","emoji":"☕","starts_at":"2026-10-04T10:00:00Z","place_name":"Blue Cafe","kind":"cafe","lat":50.049683,"lon":19.944812}"#,
+            r#"{"title":"Meet","emoji":"📍","starts_at":"2026-10-04T10:00:00Z","place_name":"Tauron Arena Kraków","kind":"hall","lat":50.0677202,"lon":19.9915490}"#,
         )]);
         world
             .model
-            .push_text("Is it the Blue Cafe at Kielecka 13 in Kraków?");
+            .push_text("Is it TAURON Arena Kraków at Stanisława Lema 7 in Kraków?");
         world.run().await.expect("turn");
         assert_eq!(world.store.create_writes(), 0);
         let pending = world
@@ -2221,16 +2221,16 @@ mod tests {
             .unwrap()
             .pending_place
             .unwrap();
-        assert_eq!(pending.street, "Kielecka 13");
+        assert_eq!(pending.street, "Stanisława Lema 7");
         let draft = world
             .store
             .replay(world.user_id)
             .into_iter()
             .find(|event| event.kind == "event.draft")
             .expect("draft");
-        assert_eq!(draft.payload["name"], "Blue Cafe");
-        assert_eq!(draft.payload["address"], "Kielecka 13, Kraków");
-        assert_eq!(draft.payload["kind"], "cafe");
+        assert_eq!(draft.payload["name"], "Tauron Arena Kraków");
+        assert_eq!(draft.payload["address"], "Stanisława Lema 7, Kraków");
+        assert_eq!(draft.payload["kind"], "hall");
         let bodies = tool_bodies(&world.model.stream_messages()[2]);
         assert!(
             bodies.iter().any(|body| body["error"]
@@ -2248,13 +2248,13 @@ mod tests {
             .set_pending_place(
                 world.user_id,
                 &PendingPlace {
-                    name: "Blue Cafe".into(),
-                    street: "Kielecka 13".into(),
+                    name: "Tauron Arena Kraków".into(),
+                    street: "Stanisława Lema 7".into(),
                     city: "Kraków".into(),
-                    address: "Kielecka 13, Kraków".into(),
-                    lat: 50.049683,
-                    lon: 19.944812,
-                    kind: PlaceKind::Cafe,
+                    address: "Stanisława Lema 7, Kraków".into(),
+                    lat: 50.0677202,
+                    lon: 19.9915490,
+                    kind: PlaceKind::Hall,
                 },
             )
             .await
@@ -2262,15 +2262,15 @@ mod tests {
         world.model.push_tools(vec![tool_call(
             "c",
             "create_event",
-            r#"{"title":"Coffee","emoji":"☕","starts_at":"2026-10-04T10:00:00Z","place_name":"somewhere","kind":"park","lat":50.05,"lon":19.945}"#,
+            r#"{"title":"Meet","emoji":"📍","starts_at":"2026-10-04T10:00:00Z","place_name":"somewhere","kind":"park","lat":50.068,"lon":19.992}"#,
         )]);
         world.model.push_text("You're on for coffee.");
         world.run().await.expect("turn");
         assert_eq!(world.store.create_writes(), 1);
         let event = &world.store.events()[0];
-        assert_eq!(event.place_name, "Blue Cafe");
-        assert_eq!(event.place_kind, PlaceKind::Cafe);
-        assert!((event.latitude - 50.049683).abs() < 1e-9);
+        assert_eq!(event.place_name, "Tauron Arena Kraków");
+        assert_eq!(event.place_kind, PlaceKind::Hall);
+        assert!((event.latitude - 50.0677202).abs() < 1e-9);
         assert!(world
             .store
             .conversation(world.user_id)

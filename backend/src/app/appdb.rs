@@ -2168,21 +2168,24 @@ mod tests {
     #[tokio::test]
     async fn pending_place_round_trips_and_clears() {
         let store = schema_store().await;
-        let user = store.create_user("Cafe", "pl").await.unwrap();
+        let user = store.create_user("Arena", "pl").await.unwrap();
         let place = PendingPlace {
-            name: "Blue Cafe".into(),
-            street: "Kielecka 13".into(),
+            name: "Tauron Arena Kraków".into(),
+            street: "Stanisława Lema 7".into(),
             city: "Kraków".into(),
-            address: "Kielecka 13, Kraków".into(),
-            lat: 50.049683,
-            lon: 19.944812,
-            kind: PlaceKind::Cafe,
+            address: "Stanisława Lema 7, Kraków".into(),
+            lat: 50.0677202,
+            lon: 19.9915490,
+            kind: PlaceKind::Hall,
         };
         store.set_pending_place(user.id, &place).await.unwrap();
         let loaded = store.conversation(user.id).await.unwrap();
-        assert_eq!(loaded.pending_place.as_ref().unwrap().name, "Blue Cafe");
-        assert_eq!(loaded.pending_place.as_ref().unwrap().kind, PlaceKind::Cafe);
-        assert!((loaded.pending_place.as_ref().unwrap().lat - 50.049683).abs() < 1e-9);
+        assert_eq!(
+            loaded.pending_place.as_ref().unwrap().name,
+            "Tauron Arena Kraków"
+        );
+        assert_eq!(loaded.pending_place.as_ref().unwrap().kind, PlaceKind::Hall);
+        assert!((loaded.pending_place.as_ref().unwrap().lat - 50.0677202).abs() < 1e-9);
         store.clear_pending_place(user.id).await.unwrap();
         assert!(store
             .conversation(user.id)
