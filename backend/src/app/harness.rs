@@ -1256,6 +1256,7 @@ mod tests {
             &self,
             _audio: bytes::Bytes,
             _content_type: &str,
+            _language: &str,
         ) -> Result<String, crate::speech::Error> {
             Err(crate::speech::Error::Transport("unused".into()))
         }

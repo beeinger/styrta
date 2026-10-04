@@ -28,7 +28,7 @@ spec:
           restartPolicy: OnFailure
           containers:
             - name: ingest
-              image: 192.168.10.3:30500/styrta-serve:20261004-7
+              image: 192.168.10.3:30500/styrta-serve:20261004-8
               imagePullPolicy: IfNotPresent
               command: ["/usr/local/bin/styrta"]
               args: ["ingest", "--concurrency", "1"]

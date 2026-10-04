@@ -29,7 +29,12 @@ impl std::error::Error for Error {}
 
 #[async_trait]
 pub trait Speech: Send + Sync {
-    async fn transcribe(&self, audio: Bytes, content_type: &str) -> Result<String, Error>;
+    async fn transcribe(
+        &self,
+        audio: Bytes,
+        content_type: &str,
+        language: &str,
+    ) -> Result<String, Error>;
     async fn speak(&self, text: &str) -> Result<Bytes, Error>;
 }
 
@@ -86,13 +91,19 @@ impl Client {
 
 #[async_trait]
 impl Speech for Client {
-    async fn transcribe(&self, audio: Bytes, content_type: &str) -> Result<String, Error> {
+    async fn transcribe(
+        &self,
+        audio: Bytes,
+        content_type: &str,
+        language: &str,
+    ) -> Result<String, Error> {
         let part = file_part(audio, content_type).map_err(|err| match err {
             Error::Transport(message) => Error::Transport(self.endpoint.scrub(&message)),
             other => other,
         })?;
         let form = reqwest::multipart::Form::new()
             .text("model", self.stt_model.clone())
+            .text("language", language.to_string())
             .part("file", part);
         let builder = self
             .endpoint
@@ -277,7 +288,7 @@ mod tests {
         let (base, hits) = spawn(Mode::Ok, "").await;
         let client = Client::new(&config(&base, "")).unwrap();
         let text = client
-            .transcribe(Bytes::from_static(b"RIFF-audio"), "audio/wav")
+            .transcribe(Bytes::from_static(b"RIFF-audio"), "audio/wav", "pl")
             .await
             .unwrap();
         assert_eq!(text, "cześć");
@@ -292,6 +303,7 @@ mod tests {
         let transcribe = String::from_utf8_lossy(&hits[0].body);
         assert!(transcribe.contains("stt-model"));
         assert!(transcribe.contains("RIFF-audio"));
+        assert_eq!(form_field(&transcribe, "language").as_deref(), Some("pl"));
         assert!(!transcribe.contains(CHAT_KEY));
         let speak: serde_json::Value = serde_json::from_slice(&hits[1].body).unwrap();
         assert_eq!(speak["model"], "tts-model");
@@ -303,6 +315,26 @@ mod tests {
             .any(|w| w == CHAT_KEY.as_bytes()));
         let rendered = format!("{client:?}");
         assert!(!rendered.contains(CHAT_KEY));
+    }
+
+    #[tokio::test]
+    async fn transcribe_sends_the_callers_language() {
+        let (base, hits) = spawn(Mode::Ok, "").await;
+        let client = Client::new(&config(&base, "")).unwrap();
+        client
+            .transcribe(Bytes::from_static(b"wav"), "audio/wav", "en")
+            .await
+            .unwrap();
+        let body = String::from_utf8(hits.lock().unwrap()[0].body.clone()).unwrap();
+        assert_eq!(form_field(&body, "model").as_deref(), Some("stt-model"));
+        assert_eq!(form_field(&body, "language").as_deref(), Some("en"));
+    }
+
+    fn form_field(body: &str, name: &str) -> Option<String> {
+        let marker = format!("name=\"{name}\"");
+        let start = body.find(&marker)? + marker.len();
+        let value = body[start..].split("\r\n\r\n").nth(1)?;
+        Some(value.split("\r\n").next()?.to_string())
     }
 
     #[tokio::test]

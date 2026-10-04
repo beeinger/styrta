@@ -1206,7 +1206,19 @@ async fn run_chat_turn(
     audio: Option<(Bytes, String)>,
 ) {
     let user_text = if let Some((bytes, content_type)) = audio {
-        match state.speech.transcribe(bytes, &content_type).await {
+        let language = match state.store.user(user_id).await {
+            Ok(user) => crate::prompt::speech_language(&user.locale),
+            Err(err) => {
+                tracing::warn!(%turn_id, error = %err, "load user");
+                fail_chat(&state, user_id, turn_id, "could not load user").await;
+                return;
+            }
+        };
+        match state
+            .speech
+            .transcribe(bytes, &content_type, language)
+            .await
+        {
             Ok(text) => text,
             Err(err) => {
                 tracing::warn!(%turn_id, error = %err, "transcribe");
@@ -2396,29 +2408,28 @@ mod tests {
         let ada_turn = post_text(&app.base, ada_token, "first note").await;
         let ada_turn_2 = post_text(&app.base, ada_token, "second note").await;
         let bob_turn = post_text(&app.base, bob_token, "bob secret note").await;
-        let audio = http()
-            .post(format!("{}/v1/chat/messages", app.base))
-            .bearer_auth(ada_token)
-            .multipart(
-                reqwest::multipart::Form::new().part(
-                    "audio",
-                    reqwest::multipart::Part::bytes(vec![1, 2, 3, 4])
-                        .file_name("note.wav")
-                        .mime_str("audio/wav")
-                        .unwrap(),
-                ),
-            )
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(audio.status(), StatusCode::ACCEPTED);
-        let audio: serde_json::Value = audio.json().await.unwrap();
-        let audio_turn = audio["turn_id"].as_str().unwrap().to_string();
+        heard_languages().lock().unwrap().clear();
+        let audio_turn = post_audio(&app.base, ada_token).await;
 
         let ada_view = wait_turn(&app.base, ada_token, &ada_turn, "failed").await;
         assert_eq!(ada_view["user_text"], "first note");
         let audio_view = wait_turn(&app.base, ada_token, &audio_turn, "failed").await;
         assert_eq!(audio_view["user_text"], "from-audio");
+        assert_eq!(heard_languages().lock().unwrap().as_slice(), ["pl"]);
+
+        let patched = http()
+            .patch(format!("{}/v1/me", app.base))
+            .bearer_auth(ada_token)
+            .json(&serde_json::json!({ "locale": "en" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(patched.status(), StatusCode::OK);
+        heard_languages().lock().unwrap().clear();
+        let english_turn = post_audio(&app.base, ada_token).await;
+        let english_view = wait_turn(&app.base, ada_token, &english_turn, "failed").await;
+        assert_eq!(english_view["user_text"], "from-audio");
+        assert_eq!(heard_languages().lock().unwrap().as_slice(), ["en"]);
         let (status, _) =
             get_json(&app.base, &format!("/v1/chat/turns/{bob_turn}"), ada_token).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
@@ -2500,6 +2511,27 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(foreign_audio.status(), StatusCode::NOT_FOUND);
+    }
+
+    async fn post_audio(base: &str, token: &str) -> String {
+        let response = http()
+            .post(format!("{base}/v1/chat/messages"))
+            .bearer_auth(token)
+            .multipart(
+                reqwest::multipart::Form::new().part(
+                    "audio",
+                    reqwest::multipart::Part::bytes(vec![1, 2, 3, 4])
+                        .file_name("note.wav")
+                        .mime_str("audio/wav")
+                        .unwrap(),
+                ),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let body: serde_json::Value = response.json().await.unwrap();
+        body["turn_id"].as_str().unwrap().to_string()
     }
 
     async fn post_text(base: &str, token: &str, text: &str) -> String {
@@ -2598,13 +2630,20 @@ mod tests {
 
     struct ScriptedSpeech;
 
+    fn heard_languages() -> &'static std::sync::Mutex<Vec<String>> {
+        static HEARD: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        &HEARD
+    }
+
     #[async_trait::async_trait]
     impl Speech for ScriptedSpeech {
         async fn transcribe(
             &self,
             _audio: Bytes,
             _content_type: &str,
+            language: &str,
         ) -> Result<String, crate::speech::Error> {
+            heard_languages().lock().unwrap().push(language.to_string());
             Ok("from-audio".to_string())
         }
 

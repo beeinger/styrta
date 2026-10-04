@@ -10,6 +10,15 @@ pub(crate) fn english_locale(locale: &str) -> bool {
     locale.trim().eq_ignore_ascii_case("en")
 }
 
+/// ISO-639-1 code for speech recognition. Same split as reply language.
+pub(crate) fn speech_language(locale: &str) -> &'static str {
+    if english_locale(locale) {
+        "en"
+    } else {
+        "pl"
+    }
+}
+
 pub fn messages(
     locale: &str,
     profile: &Profile,
@@ -282,6 +291,16 @@ mod tests {
             assert!(prompt.contains("Jedno narzędzie na turę"), "{prompt}");
             assert!(prompt.contains("signed_count"), "{prompt}");
             assert!(!prompt.contains("library has nothing"), "{prompt}");
+        }
+    }
+
+    #[test]
+    fn speech_language_follows_the_reply_locale() {
+        assert_eq!(speech_language("en"), "en");
+        assert_eq!(speech_language("EN"), "en");
+        assert_eq!(speech_language(" en "), "en");
+        for locale in ["", "pl", "PL", "is", "zh"] {
+            assert_eq!(speech_language(locale), "pl", "{locale}");
         }
     }
 
