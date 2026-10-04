@@ -16,9 +16,11 @@ import {
   RecordingPresets,
   createAudioPlayer,
   setAudioModeAsync,
-  useAudioRecorder,
   type AudioPlayer,
+  type AudioRecorder,
 } from "expo-audio";
+import * as Clipboard from "expo-clipboard";
+import * as Linking from "expo-linking";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import {
@@ -102,10 +104,12 @@ export function AiChatSheet({
   const spokenTurns = useRef(new Set<string>());
   const announcedTranscripts = useRef(new Set<string>());
   const voiceLock = useRef(false);
-  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const voiceMutedRef = useRef(false);
+  const recorderRef = useRef<AudioRecorder | null>(null);
   const [expanded, setExpanded] = useState(true);
   const [listening, setListening] = useState(false);
   const [sendingVoice, setSendingVoice] = useState(false);
+  const [voiceMuted, setVoiceMuted] = useState(false);
   const [draft, setDraft] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [authMode, setAuthMode] = useState<"sign-in" | "sign-up">("sign-in");
@@ -186,7 +190,8 @@ export function AiChatSheet({
   };
 
   const playReply = async (turnId: string, url: string) => {
-    if (spokenTurns.current.has(turnId)) {
+    if (spokenTurns.current.has(turnId) || voiceMutedRef.current) {
+      spokenTurns.current.add(turnId);
       return;
     }
     const token = accessTokenRef.current;
@@ -398,11 +403,18 @@ export function AiChatSheet({
 
   useEffect(() => {
     return () => {
-      if (recorder.isRecording) {
-        void recorder.stop();
+      const recorder = recorderRef.current;
+      recorderRef.current = null;
+      if (!recorder) {
+        return;
+      }
+      try {
+        recorder.release();
+      } catch {
+        // Already released.
       }
     };
-  }, [recorder]);
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -472,9 +484,7 @@ export function AiChatSheet({
       setDraft("");
       setListening(false);
       setSendingVoice(false);
-      if (recorder.isRecording) {
-        void recorder.stop();
-      }
+      releaseRecorder();
       return;
     }
     const token = accessToken;
@@ -523,6 +533,22 @@ export function AiChatSheet({
       stream.close();
     };
   }, [accessToken]);
+
+  const toggleVoice = () => {
+    const next = !voiceMutedRef.current;
+    voiceMutedRef.current = next;
+    setVoiceMuted(next);
+    if (next) {
+      try {
+        replyPlayer.current?.pause();
+      } catch {
+        replyPlayer.current = null;
+      }
+    }
+    AccessibilityInfo.announceForAccessibility(
+      next ? "Assistant voice muted." : "Assistant voice on.",
+    );
+  };
 
   const toggleExpanded = () => {
     const next = !expanded;
@@ -663,6 +689,29 @@ export function AiChatSheet({
     }
   }
 
+  function releaseRecorder() {
+    const recorder = recorderRef.current;
+    recorderRef.current = null;
+    if (!recorder) {
+      return;
+    }
+    try {
+      recorder.release();
+    } catch {
+      // Already released.
+    }
+  }
+
+  function ensureRecorder(): AudioRecorder {
+    const existing = recorderRef.current;
+    if (existing) {
+      return existing;
+    }
+    const created = createRecorder();
+    recorderRef.current = created;
+    return created;
+  }
+
   const onSpeak = () => {
     if (voiceLock.current || sendingVoice) {
       return;
@@ -671,6 +720,7 @@ export function AiChatSheet({
     if (!token) {
       return;
     }
+    const recorder = ensureRecorder();
     if (listening) {
       voiceLock.current = true;
       setListening(false);
@@ -678,8 +728,12 @@ export function AiChatSheet({
       void (async () => {
         try {
           const duration = recorder.getStatus().durationMillis;
-          await recorder.stop();
-          const uri = recorder.uri;
+          const stopped = (await recorder.stop()) as unknown as { url?: string | null };
+          const stoppedUrl = stopped?.url;
+          const uri =
+            typeof stoppedUrl === "string" && stoppedUrl.length > 0
+              ? stoppedUrl
+              : recorder.uri;
           if (!mountedRef.current || accessTokenRef.current !== token) {
             return;
           }
@@ -690,6 +744,9 @@ export function AiChatSheet({
           }
           await deliverAudio(token, speechClip(uri));
         } catch (error) {
+          if (recorderReleased(error)) {
+            recorderRef.current = null;
+          }
           if (!mountedRef.current) {
             return;
           }
@@ -723,8 +780,13 @@ export function AiChatSheet({
         }
         setListening(true);
         setChatError(null);
-        AccessibilityInfo.announceForAccessibility("Listening. Tap again to send.");
+        AccessibilityInfo.announceForAccessibility(
+          "Listening. Tap again to send, or cancel.",
+        );
       } catch (error) {
+        if (recorderReleased(error)) {
+          recorderRef.current = null;
+        }
         if (!mountedRef.current) {
           return;
         }
@@ -735,6 +797,29 @@ export function AiChatSheet({
         voiceLock.current = false;
       }
     })();
+  };
+
+  const cancelListening = () => {
+    if (voiceLock.current || sendingVoice || !listening) {
+      return;
+    }
+    voiceLock.current = true;
+    setListening(false);
+    const recorder = recorderRef.current;
+    void (async () => {
+      try {
+        if (recorder?.isRecording) {
+          await recorder.stop();
+        }
+      } catch (error) {
+        if (recorderReleased(error)) {
+          recorderRef.current = null;
+        }
+      } finally {
+        voiceLock.current = false;
+      }
+    })();
+    AccessibilityInfo.announceForAccessibility("Recording cancelled.");
   };
 
   const awaitingReply = messages.some((message) => message.pending);
@@ -821,6 +906,31 @@ export function AiChatSheet({
             }}
           >
             <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={voiceMuted ? "Unmute assistant voice" : "Mute assistant voice"}
+              accessibilityHint={
+                voiceMuted
+                  ? "Assistant replies stay on screen."
+                  : "Assistant replies are read aloud."
+              }
+              accessibilityState={{ selected: voiceMuted }}
+              onPress={toggleVoice}
+              hitSlop={4}
+              style={({ pressed }) => [
+                styles.chevronButton,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text
+                style={styles.voiceEmoji}
+                maxFontSizeMultiplier={1.8}
+                importantForAccessibility="no"
+                accessibilityElementsHidden
+              >
+                {voiceMuted ? "🔇" : "🔊"}
+              </Text>
+            </Pressable>
+            <Pressable
               ref={toggleRef}
               accessibilityRole="button"
               accessibilityLabel={expanded ? "Minimize chat" : "Expand chat"}
@@ -858,37 +968,9 @@ export function AiChatSheet({
                 Messages you send show up here.
               </Text>
             ) : (
-              messages.map((message) => {
-                const assistant = message.role === "assistant";
-                return (
-                  <View
-                    key={message.id}
-                    accessible
-                    accessibilityRole="text"
-                    accessibilityLabel={
-                      message.pending
-                        ? "Assistant is thinking"
-                        : assistant
-                          ? `Assistant said: ${message.text}`
-                          : `You said: ${message.text}`
-                    }
-                    accessibilityLiveRegion={message.pending ? "polite" : undefined}
-                    style={[styles.bubble, assistant && styles.assistantBubble]}
-                  >
-                    <Text
-                      style={[
-                        styles.bubbleText,
-                        assistant && styles.assistantText,
-                        message.pending && styles.pendingText,
-                      ]}
-                      importantForAccessibility="no"
-                      accessibilityElementsHidden
-                    >
-                      {message.text}
-                    </Text>
-                  </View>
-                );
-              })
+              messages.map((message) => (
+                <ChatBubble key={message.id} message={message} />
+              ))
             )}
           </ScrollView>
         ) : null}
@@ -910,40 +992,61 @@ export function AiChatSheet({
                   {THINKING_LINE}
                 </Text>
               ) : null}
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={
-                  sendingVoice ? "Sending" : listening ? "Tap to stop" : "Tap to speak"
-                }
-                accessibilityHint={
-                  listening
-                    ? "Stops listening and sends what you said."
-                    : "Starts listening. Tap again to send what you said."
-                }
-                accessibilityState={{
-                  selected: listening,
-                  busy: sendingVoice,
-                  disabled: sendingVoice,
-                }}
-                disabled={sendingVoice}
-                hitSlop={space.md}
-                onPress={onSpeak}
-                style={[
-                  styles.speak,
-                  listening && styles.speakListening,
-                  sendingVoice && styles.authButtonDisabled,
-                ]}
-              >
-                <SoundWave active={listening} />
-                <Text
-                  style={[styles.speakLabel, listening && styles.speakLabelListening]}
-                  maxFontSizeMultiplier={1.8}
-                  importantForAccessibility="no"
-                  accessibilityElementsHidden
+              <View style={styles.speakRow}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    sendingVoice ? "Sending" : listening ? "Tap to stop" : "Tap to speak"
+                  }
+                  accessibilityHint={
+                    listening
+                      ? "Stops listening and sends what you said."
+                      : "Starts listening. Tap again to send what you said."
+                  }
+                  accessibilityState={{
+                    selected: listening,
+                    busy: sendingVoice,
+                    disabled: sendingVoice,
+                  }}
+                  disabled={sendingVoice}
+                  hitSlop={space.md}
+                  onPress={onSpeak}
+                  style={[
+                    styles.speak,
+                    listening && styles.speakListening,
+                    sendingVoice && styles.authButtonDisabled,
+                  ]}
                 >
-                  {sendingVoice ? "Sending" : listening ? "Tap to stop" : "Tap to speak"}
-                </Text>
-              </Pressable>
+                  <SoundWave active={listening} />
+                  <Text
+                    style={[styles.speakLabel, listening && styles.speakLabelListening]}
+                    maxFontSizeMultiplier={1.8}
+                    importantForAccessibility="no"
+                    accessibilityElementsHidden
+                  >
+                    {sendingVoice ? "Sending" : listening ? "Tap to stop" : "Tap to speak"}
+                  </Text>
+                </Pressable>
+                {listening ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Cancel recording"
+                    accessibilityHint="Discards what you said without sending a message."
+                    hitSlop={space.md}
+                    onPress={cancelListening}
+                    style={styles.cancelSpeak}
+                  >
+                    <Text
+                      style={styles.cancelSpeakLabel}
+                      maxFontSizeMultiplier={1.8}
+                      importantForAccessibility="no"
+                      accessibilityElementsHidden
+                    >
+                      ✕
+                    </Text>
+                  </Pressable>
+                ) : null}
+              </View>
               <TextInput
                 value={draft}
                 onChangeText={setDraft}
@@ -1063,6 +1166,191 @@ export function AiChatSheet({
   );
 }
 
+type MessagePart =
+  | { kind: "text"; text: string }
+  | { kind: "link"; label: string; href: string };
+
+function ChatBubble({ message }: { message: ChatMessage }) {
+  const assistant = message.role === "assistant";
+  const parts =
+    assistant && !message.pending ? linkParts(message.text) : [{ kind: "text" as const, text: message.text }];
+  const links = parts.filter((part) => part.kind === "link");
+  const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (copiedTimer.current != null) clearTimeout(copiedTimer.current);
+    },
+    [],
+  );
+
+  async function copyMessage() {
+    let saved = false;
+    try {
+      saved = await Clipboard.setStringAsync(message.text);
+    } catch {
+      saved = false;
+    }
+    if (!saved) {
+      AccessibilityInfo.announceForAccessibility("Could not copy the message.");
+      return;
+    }
+    setCopied(true);
+    AccessibilityInfo.announceForAccessibility("Copied");
+    if (copiedTimer.current != null) clearTimeout(copiedTimer.current);
+    copiedTimer.current = setTimeout(() => setCopied(false), 2000);
+  }
+
+  const spoken = message.pending
+    ? "Assistant is thinking"
+    : assistant
+      ? `Assistant said: ${message.text}`
+      : `You said: ${message.text}`;
+
+  const sheetFill = assistant ? colors.white : colors.quaternary;
+
+  return (
+    <View
+      accessibilityLiveRegion={message.pending ? "polite" : undefined}
+      style={[styles.bubble, assistant && styles.assistantBubble, !message.pending && styles.bubbleWithCopy]}
+    >
+      <Text
+        style={[
+          styles.bubbleText,
+          !message.pending && styles.bubbleTextBesideCopy,
+          assistant && styles.assistantText,
+          message.pending && styles.pendingText,
+        ]}
+        accessibilityRole="text"
+        accessibilityLabel={spoken}
+        accessibilityActions={links.map((link, index) => ({
+          name: `open-link-${index}`,
+          label: `Open ${link.label}`,
+        }))}
+        onAccessibilityAction={(event) => {
+          const index = Number(event.nativeEvent.actionName.replace("open-link-", ""));
+          const link = links[index];
+          if (link) void openExternalLink(link.href);
+        }}
+      >
+        {parts.map((part, index) =>
+          part.kind === "text" ? (
+            <Text key={`text-${index}`}>{part.text}</Text>
+          ) : (
+            <Text
+              key={`link-${index}`}
+              accessibilityRole="link"
+              accessibilityLabel={part.label}
+              accessibilityHint="Opens in your browser"
+              style={styles.link}
+              onPress={() => void openExternalLink(part.href)}
+            >
+              {part.label}
+            </Text>
+          ),
+        )}
+      </Text>
+      {message.pending ? null : (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={copied ? "Message copied" : "Copy message"}
+          accessibilityHint="Copies this message."
+          onPress={() => void copyMessage()}
+          hitSlop={space.sm}
+          style={({ pressed }) => [styles.copyButton, pressed && styles.pressed]}
+        >
+          {({ pressed }) => (
+            <CopyGlyph copied={copied} fill={pressed ? colors.line : sheetFill} />
+          )}
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
+function linkParts(source: string): MessagePart[] {
+  const parts: MessagePart[] = [];
+  const pattern = /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|https?:\/\/[^\s<>]+|www\.[^\s<>]+/gi;
+  let cursor = 0;
+  for (const match of source.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    if (index > cursor) {
+      parts.push({ kind: "text", text: source.slice(cursor, index) });
+    }
+    if (match[1] != null && match[2] != null) {
+      const href = match[2];
+      if (isHttpUrl(href)) {
+        parts.push({ kind: "link", label: match[1], href });
+      } else {
+        parts.push({ kind: "text", text: match[0] });
+      }
+      cursor = index + match[0].length;
+      continue;
+    }
+    const { href: trimmed, trailing } = splitTrailing(match[0]);
+    const href = /^www\./i.test(trimmed) ? `https://${trimmed}` : trimmed;
+    if (isHttpUrl(href)) {
+      parts.push({ kind: "link", label: trimmed, href });
+      if (trailing) parts.push({ kind: "text", text: trailing });
+    } else {
+      parts.push({ kind: "text", text: match[0] });
+    }
+    cursor = index + match[0].length;
+  }
+  if (cursor < source.length) {
+    parts.push({ kind: "text", text: source.slice(cursor) });
+  }
+  return parts;
+}
+
+function splitTrailing(raw: string): { href: string; trailing: string } {
+  let end = raw.length;
+  while (end > 0) {
+    const char = raw[end - 1] ?? "";
+    if (char === ")") {
+      const head = raw.slice(0, end);
+      const opens = countChar(head, "(");
+      const closes = countChar(head, ")");
+      if (closes <= opens) break;
+      end -= 1;
+      continue;
+    }
+    if (".,;:!]\"'".includes(char)) {
+      end -= 1;
+      continue;
+    }
+    break;
+  }
+  return { href: raw.slice(0, end), trailing: raw.slice(end) };
+}
+
+function countChar(value: string, char: string): number {
+  let count = 0;
+  for (const item of value) {
+    if (item === char) count += 1;
+  }
+  return count;
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (url.protocol === "http:" || url.protocol === "https:") && url.hostname.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function openExternalLink(url: string) {
+  if (!isHttpUrl(url)) return;
+  try {
+    await Linking.openURL(url);
+  } catch {
+    AccessibilityInfo.announceForAccessibility("Could not open the link.");
+  }
+}
+
 function historyToMessage(message: HistoryMessage): ChatMessage {
   return {
     id: message.id,
@@ -1088,6 +1376,26 @@ function delay(milliseconds: number): Promise<void> {
   });
 }
 
+function CopyGlyph({ copied, fill }: { copied: boolean; fill: string }) {
+  return (
+    <View
+      pointerEvents="none"
+      importantForAccessibility="no"
+      accessibilityElementsHidden
+      style={styles.copyIcon}
+    >
+      {copied ? (
+        <View style={styles.copiedMark} />
+      ) : (
+        <>
+          <View style={styles.copySheetBack} />
+          <View style={[styles.copySheetFront, { backgroundColor: fill }]} />
+        </>
+      )}
+    </View>
+  );
+}
+
 function ChevronGlyph({ expanded }: { expanded: boolean }) {
   return (
     <View
@@ -1097,6 +1405,40 @@ function ChevronGlyph({ expanded }: { expanded: boolean }) {
       style={[styles.chevron, expanded ? styles.chevronDown : styles.chevronUp]}
     />
   );
+}
+
+function createRecorder(): AudioRecorder {
+  const native = AudioModule as unknown as {
+    AudioRecorder?: new (options: object) => AudioRecorder;
+    AudioRecorderWeb?: new (options: object) => AudioRecorder;
+  };
+  const Factory = native.AudioRecorder ?? native.AudioRecorderWeb;
+  if (!Factory) {
+    throw new Error("Recording is not available.");
+  }
+  return new Factory(recordingOptions());
+}
+
+function recordingOptions() {
+  const preset = RecordingPresets.HIGH_QUALITY;
+  const common = {
+    extension: preset.extension,
+    sampleRate: preset.sampleRate,
+    numberOfChannels: preset.numberOfChannels,
+    bitRate: preset.bitRate,
+    isMeteringEnabled: false,
+  };
+  if (Platform.OS === "ios") {
+    return { ...common, ...preset.ios };
+  }
+  if (Platform.OS === "android") {
+    return { ...common, ...preset.android };
+  }
+  return { ...common, ...preset.web };
+}
+
+function recorderReleased(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("already released");
 }
 
 function audioSession(allowsRecording: boolean) {
@@ -1155,8 +1497,12 @@ const styles = StyleSheet.create({
   },
   header: {
     flexDirection: "row",
-    justifyContent: "flex-end",
+    justifyContent: "space-between",
     alignItems: "center",
+  },
+  voiceEmoji: {
+    fontSize: 22,
+    lineHeight: 28,
   },
   chevronButton: {
     width: 44,
@@ -1212,11 +1558,21 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.line,
   },
+  bubbleWithCopy: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    paddingTop: space.xs,
+    paddingEnd: space.xs,
+  },
   bubbleText: {
     color: colors.ink,
     fontFamily: fonts.regular,
     fontSize: 16,
     lineHeight: 22,
+  },
+  bubbleTextBesideCopy: {
+    flexShrink: 1,
+    paddingTop: space.sm,
   },
   assistantText: {
     color: colors.ink,
@@ -1224,6 +1580,52 @@ const styles = StyleSheet.create({
   pendingText: {
     color: colors.inkMuted,
     fontStyle: "italic",
+  },
+  link: {
+    color: colors.ink,
+    fontFamily: fonts.semibold,
+    textDecorationLine: "underline",
+  },
+  copyButton: {
+    width: 44,
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 22,
+  },
+  copyIcon: {
+    width: 16,
+    height: 16,
+  },
+  copySheetBack: {
+    position: "absolute",
+    top: 0,
+    start: 0,
+    width: 11,
+    height: 11,
+    borderWidth: 1.5,
+    borderColor: colors.ink,
+    borderRadius: 2,
+  },
+  copySheetFront: {
+    position: "absolute",
+    top: 4,
+    start: 4,
+    width: 11,
+    height: 11,
+    borderWidth: 1.5,
+    borderColor: colors.ink,
+    borderRadius: 2,
+  },
+  copiedMark: {
+    width: 6,
+    height: 11,
+    marginTop: 1,
+    marginStart: 5,
+    borderBottomWidth: 2,
+    borderRightWidth: 2,
+    borderColor: colors.ink,
+    transform: [{ rotate: "40deg" }],
   },
   pendingStatus: {
     color: colors.inkMuted,
@@ -1234,12 +1636,30 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginBottom: space.sm,
   },
+  speakRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: space.md,
+    marginBottom: space.sm,
+  },
   speak: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: space.sm,
-    marginBottom: space.sm,
+  },
+  cancelSpeak: {
+    width: 44,
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cancelSpeakLabel: {
+    color: "#D70015",
+    fontFamily: fonts.semibold,
+    fontSize: 22,
+    lineHeight: 28,
   },
   speakListening: {},
   speakLabel: {
