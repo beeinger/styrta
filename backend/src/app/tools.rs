@@ -6,12 +6,14 @@ use unicode_segmentation::UnicodeSegmentation;
 use uuid::Uuid;
 
 use crate::appdb::{
-    Attendance, Event, ForgetResult, Memory, NewEvent, NewMemory, Profile, ProfilePatch,
+    Attendance, Event, ForgetResult, Memory, NewEvent, NewMemory, PendingPlace, Profile,
+    ProfilePatch,
 };
 use crate::embed::{Embedder, Input};
 use crate::harness::{HarnessStore, StoreError};
 use crate::knowledge::{Hit, Query};
 use crate::llm::{ToolCall, ToolDefinition};
+use crate::places::{Geocoder, PlaceHit};
 use crate::rank::{self, PersonHit, PlaceKind, ScoredEvent};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +42,7 @@ pub enum ToolName {
     SearchEvents,
     SearchPeople,
     ListMyEvents,
+    SearchPlace,
     CreateEvent,
     JoinEvent,
     CancelAttendance,
@@ -57,6 +60,7 @@ impl ToolName {
             Self::SearchEvents => "search_events",
             Self::SearchPeople => "search_people",
             Self::ListMyEvents => "list_my_events",
+            Self::SearchPlace => "search_place",
             Self::CreateEvent => "create_event",
             Self::JoinEvent => "join_event",
             Self::CancelAttendance => "cancel_attendance",
@@ -74,6 +78,7 @@ impl ToolName {
             "search_events" => Self::SearchEvents,
             "search_people" => Self::SearchPeople,
             "list_my_events" => Self::ListMyEvents,
+            "search_place" => Self::SearchPlace,
             "create_event" => Self::CreateEvent,
             "join_event" => Self::JoinEvent,
             "cancel_attendance" => Self::CancelAttendance,
@@ -92,6 +97,7 @@ impl ToolName {
             Self::SearchEvents => "Searching events",
             Self::SearchPeople => "Searching people",
             Self::ListMyEvents => "Listing your events",
+            Self::SearchPlace => "Finding the place",
             Self::CreateEvent => "Creating the event",
             Self::JoinEvent => "Joining the event",
             Self::CancelAttendance => "Cancelling",
@@ -136,6 +142,11 @@ pub struct EventIdArgs {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+struct SearchPlaceArgs {
+    query: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 pub struct SearchChatHistoryArgs {
     pub query: String,
 }
@@ -173,6 +184,7 @@ struct CreateEventArgs {
 pub struct ToolContext<'a, S = crate::appdb::Store> {
     pub store: &'a S,
     pub embedder: &'a dyn Embedder,
+    pub geocoder: &'a dyn Geocoder,
     pub user_id: Uuid,
     pub now: DateTime<Utc>,
 }
@@ -182,6 +194,7 @@ pub struct ToolResult {
     pub body: Value,
     pub event_id: Option<Uuid>,
     pub hit_count: Option<u32>,
+    pub draft: Option<PlaceHit>,
 }
 
 impl ToolResult {
@@ -190,6 +203,7 @@ impl ToolResult {
             body,
             event_id: None,
             hit_count: None,
+            draft: None,
         }
     }
 
@@ -198,6 +212,7 @@ impl ToolResult {
             body,
             event_id: None,
             hit_count: Some(u32::try_from(count).unwrap_or(u32::MAX)),
+            draft: None,
         }
     }
 
@@ -206,6 +221,7 @@ impl ToolResult {
             body,
             event_id: Some(event_id),
             hit_count: None,
+            draft: None,
         }
     }
 }
@@ -280,7 +296,7 @@ pub fn specs() -> Result<Vec<ToolDefinition>, Error> {
         ),
         spec(
             ToolName::SearchEvents,
-            "Call this when they want somewhere to go. lat and lng are required. Use coordinates they gave or from an earlier tool result. If you have none, use lat 50.0683 and lng 19.9917, TAURON Arena at ul. Stanisława Lema 7, and say you looked around the arena. query is optional. Do not add an activity the filters dropped. If capacity is set and signed_count is at least capacity, it is full: do not offer it, and join will fail. Speak one event unless they asked for a list: title, place_name, starts_at in local words, and host_name as stored. If promoted is true, say it is promoted. Do not speak score, distance_m, or coordinates. An empty events list means nothing in range passed.",
+            "Call this when they want somewhere to go. lat and lng are required. Use coordinates they gave or from an earlier tool result. If you have none, use lat 50.0683 and lng 19.9917, TAURON Arena at ul. Stanisława Lema 7, and say you looked around the arena. query is optional. Do not add an activity the filters dropped. If capacity is set and signed_count is at least capacity, it is full: do not offer it, and join will fail. Speak one event unless they asked for a list: the title, the public place_name, and signed_count as how many people are going. Then ask if they want to go. Do not call join_event until a later message where they said yes. If promoted is true, say it is promoted. Do not speak score, distance_m, host_name, or coordinates. An empty events list means nothing in range passed. Say nothing fits and ask if they want to post their own. Do not call create_event in that turn.",
             schema(
                 json!({
                     "query": {"type": "string", "description": "Optional. The activity in a few words, such as walk or cafe."},
@@ -304,12 +320,22 @@ pub fn specs() -> Result<Vec<ToolDefinition>, Error> {
         ),
         spec(
             ToolName::ListMyEvents,
-            "Call this when they ask which meetups they are going to. Pass no arguments. It returns events where their attendance is going, not an event they only host. The status field is the event status, usually scheduled, not the attendance. If they just created one, speak from that create_event result. Speak title, place_name, and starts_at in local words.",
+            "Call this when they ask which meetups they are going to. Pass no arguments. It returns events where their attendance is going, not an event they only host. The status field is the event status, usually scheduled, not the attendance. If they just created one, speak from that create_event result. Speak the title, the public place_name, and signed_count as how many people are going.",
             schema(json!({}), &[]),
         ),
         spec(
+            ToolName::SearchPlace,
+            "Call this when they named a public place for a new meetup. query is their words. It searches public places in Małopolska and returns at most 3. The map pins the first place. Ask once if it is that name at that street in that city. Do not call create_event in this turn. An empty places list means you did not find it: ask for a public place again. rejected_private true means the hit was a home: say it has to be a public place. If they want a later place in the list, call this again with that name.",
+            schema(
+                json!({
+                    "query": {"type": "string", "description": "The place they named, such as Blue Cafe Kraków."},
+                }),
+                &["query"],
+            ),
+        ),
+        spec(
             ToolName::CreateEvent,
-            "Call this only after they asked you to create this meetup. The longitude field is lon, not lng. Copy a search result's longitude into lon. Do not invent coordinates, and do not reuse the arena fallback unless they are meeting at the arena. starts_at is RFC3339 UTC. Europe/Warsaw is UTC+2 from 01:00 UTC on the last Sunday of March until 01:00 UTC on the last Sunday of October, otherwise UTC+1. place_name must be public. The store rejects kind not_public only, so do not send a home under a public kind. emoji is one grapheme and is not spoken. women_only true only when they asked for a women-only meetup. activity_tags use the same English words as set_profile. Omit capacity and description unless they gave them. Hosting does not mark them as going.",
+            "Call this only in a later message, after they said yes to the pending place from search_place. The longitude field is lon, not lng. Copy that place's lat into lat and its lon into lon. The store keeps the geocoded name, kind, and coordinates when they are close. Do not invent coordinates, and do not reuse the arena fallback unless search_place returned the arena. starts_at is RFC3339 UTC. Europe/Warsaw is UTC+2 from 01:00 UTC on the last Sunday of March until 01:00 UTC on the last Sunday of October, otherwise UTC+1. place_name must be public. The store rejects kind not_public only, so do not send a home under a public kind. emoji is one grapheme and is not spoken. women_only true only when they asked for a women-only meetup. activity_tags use the same English words as set_profile. Omit capacity and description unless they gave them. Hosting does not mark them as going. If the result has error, the meetup was not created.",
             schema(
                 json!({
                     "title": {"type": "string", "description": "Short name of the meetup."},
@@ -337,7 +363,7 @@ pub fn specs() -> Result<Vec<ToolDefinition>, Error> {
         ),
         spec(
             ToolName::JoinEvent,
-            "Call this only after they asked to join a specific event. event_id must be an id from search_events or list_my_events in this conversation. Success is status going. If the result has error, including event is full, the join did not happen. Say that in a sentence.",
+            "Call this only in a later message, after they said yes to one event you already offered. event_id must be an id from search_events or list_my_events in this conversation. Do not call it in the same turn as search_events. Success is status going. If the result has error, including event is full, the join did not happen. Say that in a sentence.",
             schema(
                 json!({"event_id": {"type": "string", "description": "id from search_events or list_my_events."}}),
                 &["event_id"],
@@ -402,6 +428,7 @@ pub async fn execute<S: HarnessStore>(
         ToolName::SearchEvents => search_events(&ctx, call).await,
         ToolName::SearchPeople => search_people(&ctx, call).await,
         ToolName::ListMyEvents => list_my_events(&ctx, call).await,
+        ToolName::SearchPlace => search_place(&ctx, call).await,
         ToolName::CreateEvent => create_event(&ctx, call).await,
         ToolName::JoinEvent => join_event(&ctx, call).await,
         ToolName::CancelAttendance => cancel_attendance(&ctx, call).await,
@@ -596,18 +623,109 @@ async fn list_my_events<S: HarnessStore>(
     ))
 }
 
+async fn search_place<S: HarnessStore>(
+    ctx: &ToolContext<'_, S>,
+    call: &ToolCall,
+) -> Result<ToolResult, Error> {
+    let args: SearchPlaceArgs = parse(&call.arguments)?;
+    if args.query.trim().is_empty() {
+        return Err(Error::BadArguments("query is empty".to_string()));
+    }
+    let found = match ctx.geocoder.search(&args.query).await {
+        Ok(found) => found,
+        Err(err) => {
+            tracing::warn!(error = %err, "place search");
+            return Err(Error::Failed("place search failed".to_string()));
+        }
+    };
+    if found.places.is_empty() {
+        ctx.store
+            .clear_pending_place(ctx.user_id)
+            .await
+            .map_err(failed)?;
+        return Ok(ToolResult::hits(
+            json!({
+                "places": [],
+                "rejected_private": found.rejected_private,
+            }),
+            0,
+        ));
+    }
+    let first = &found.places[0];
+    ctx.store
+        .set_pending_place(
+            ctx.user_id,
+            &PendingPlace {
+                name: first.name.clone(),
+                street: first.street.clone(),
+                city: first.city.clone(),
+                address: first.address.clone(),
+                lat: first.latitude,
+                lon: first.longitude,
+                kind: first.kind,
+            },
+        )
+        .await
+        .map_err(failed)?;
+    let mut result = ToolResult::hits(
+        json!({
+            "places": found.places.iter().map(place_json).collect::<Vec<_>>(),
+            "rejected_private": false,
+        }),
+        found.places.len(),
+    );
+    result.draft = Some(first.clone());
+    Ok(result)
+}
+
 async fn create_event<S: HarnessStore>(
     ctx: &ToolContext<'_, S>,
     call: &ToolCall,
 ) -> Result<ToolResult, Error> {
-    let event = event_args(call)?;
+    let mut event = event_args(call)?;
+    let pending = ctx
+        .store
+        .conversation(ctx.user_id)
+        .await
+        .map_err(failed)?
+        .pending_place
+        .ok_or_else(|| Error::Failed("search for a public place first".to_string()))?;
+    if !same_place(pending.lat, event.latitude) || !same_place(pending.lon, event.longitude) {
+        return Err(Error::Failed(
+            "coordinates do not match the place they confirmed".to_string(),
+        ));
+    }
+    event.place_name = pending.name;
+    event.place_kind = pending.kind;
+    event.latitude = pending.lat;
+    event.longitude = pending.lon;
     let saved = ctx
         .store
         .create_event(ctx.user_id, event)
         .await
         .map_err(failed)?;
+    ctx.store
+        .clear_pending_place(ctx.user_id)
+        .await
+        .map_err(failed)?;
     let id = saved.id;
     Ok(ToolResult::event(event_json(&saved), id))
+}
+
+fn same_place(left: f64, right: f64) -> bool {
+    (left - right).abs() <= 0.002
+}
+
+fn place_json(place: &PlaceHit) -> Value {
+    json!({
+        "name": place.name,
+        "street": place.street,
+        "city": place.city,
+        "address": place.address,
+        "lat": place.latitude,
+        "lon": place.longitude,
+        "kind": place.kind.as_str(),
+    })
 }
 
 async fn join_event<S: HarnessStore>(
@@ -866,6 +984,7 @@ mod tests {
             ToolName::SearchEvents,
             ToolName::SearchPeople,
             ToolName::ListMyEvents,
+            ToolName::SearchPlace,
             ToolName::CreateEvent,
             ToolName::JoinEvent,
             ToolName::CancelAttendance,
@@ -890,6 +1009,9 @@ mod tests {
         assert!(by_name("set_profile").description.contains("65+"));
         assert!(by_name("list_my_events").description.contains("going"));
         assert!(by_name("create_event").description.contains("lon, not lng"));
+        assert!(by_name("search_place").description.contains("public place"));
+        assert!(by_name("search_events").description.contains("signed_count"));
+        assert!(by_name("join_event").description.contains("later message"));
         assert!(by_name("set_profile").description.contains("wheelchair"));
         assert!(by_name("search_events").description.contains("50.0683"));
         assert!(by_name("search_events").description.contains("19.9917"));

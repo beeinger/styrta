@@ -6,6 +6,7 @@ use styrta::appdb::Store;
 use styrta::config::Config;
 use styrta::embed;
 use styrta::llm;
+use styrta::places;
 use styrta::speech;
 
 const LISTEN: &str = "0.0.0.0:8088";
@@ -38,6 +39,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         .map_err(|err| anyhow!("{err}"))
         .context("embed dimension")?;
     let embedder: Arc<dyn embed::Embedder> = Arc::new(client);
+    let geocoder = places::Client::new(&config).context("place search")?;
     let store = store.with_embedder(Arc::clone(&embedder), &config.embed_model);
     let filler = store.clone();
     tokio::spawn(async move {
@@ -55,6 +57,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         model: Arc::new(model),
         speech: Arc::new(speech),
         embedder,
+        geocoder: Arc::new(geocoder),
     };
     styrta::harness::resume_running(api::harness_services(&state))
         .await

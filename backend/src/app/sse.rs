@@ -31,6 +31,7 @@ pub enum Kind {
     ReplyDelta,
     ReplyDone,
     AudioReady,
+    EventDraft,
     TurnDone,
     TurnFailed,
 }
@@ -45,6 +46,7 @@ impl Kind {
             Self::ReplyDelta => "reply.delta",
             Self::ReplyDone => "reply.done",
             Self::AudioReady => "audio.ready",
+            Self::EventDraft => "event.draft",
             Self::TurnDone => "turn.done",
             Self::TurnFailed => "turn.failed",
         }
@@ -59,6 +61,7 @@ impl Kind {
             "reply.delta" => Self::ReplyDelta,
             "reply.done" => Self::ReplyDone,
             "audio.ready" => Self::AudioReady,
+            "event.draft" => Self::EventDraft,
             "turn.done" => Self::TurnDone,
             "turn.failed" => Self::TurnFailed,
             _ => return None,
@@ -130,6 +133,17 @@ pub struct ReplyDone {
 pub struct AudioReady {
     pub turn_id: Uuid,
     pub url: String,
+}
+
+/// A public place the person has not confirmed yet. The map pins `lat` and `lon`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct EventDraft {
+    pub turn_id: Uuid,
+    pub name: String,
+    pub address: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub kind: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

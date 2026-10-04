@@ -42,6 +42,7 @@ pub struct AppState {
     pub model: Arc<dyn Model>,
     pub speech: Arc<dyn Speech>,
     pub embedder: Arc<dyn Embedder>,
+    pub geocoder: Arc<dyn crate::places::Geocoder>,
 }
 
 /// New account. `locale` defaults to `pl`. `en` selects English replies.
@@ -307,6 +308,7 @@ impl Modify for BearerAuth {
         crate::sse::TranscriptReady,
         crate::sse::ToolStarted,
         crate::sse::ToolFinished,
+        crate::sse::EventDraft,
         crate::sse::ReplyDelta,
         crate::sse::ReplyDone,
         crate::sse::AudioReady,
@@ -321,6 +323,7 @@ pub fn harness_services(state: &AppState) -> Services<'_> {
         model: state.model.as_ref(),
         speech: state.speech.as_ref(),
         embedder: state.embedder.as_ref(),
+        geocoder: state.geocoder.as_ref(),
         config: state.config.as_ref(),
     }
 }
@@ -440,7 +443,7 @@ async fn refresh_session(
         ("Last-Event-ID" = Option<i64>, Header, description = "Replay events with a greater id, then follow. Omit it to follow only new events.")
     ),
     responses(
-        (status = 200, description = "text/event-stream. Each event has an id and a named type: turn.started, transcript.ready, tool.started, tool.finished, reply.delta, reply.done, audio.ready, turn.done, turn.failed. Heartbeats are comment lines. Payload shapes are the components TurnRef, TranscriptReady, ToolStarted, ToolFinished, ReplyDelta, ReplyDone, AudioReady, and TurnFailed.", content_type = "text/event-stream"),
+        (status = 200, description = "text/event-stream. Each event has an id and a named type: turn.started, transcript.ready, tool.started, tool.finished, event.draft, reply.delta, reply.done, audio.ready, turn.done, turn.failed. Heartbeats are comment lines. event.draft is a public place to pin before the person confirms it. Payload shapes are the components TurnRef, TranscriptReady, ToolStarted, ToolFinished, EventDraft, ReplyDelta, ReplyDone, AudioReady, and TurnFailed.", content_type = "text/event-stream"),
         (status = 401, body = ErrorBody),
     ),
     security(("bearer" = []))
@@ -1486,6 +1489,7 @@ mod tests {
         let json = spec.to_pretty_json().unwrap();
         assert!(json.contains("bearer"), "{json}");
         assert!(json.contains("turn.started"));
+        assert!(json.contains("event.draft"));
     }
 
     #[test]
@@ -1727,6 +1731,7 @@ mod tests {
                     model: Arc::new(ScriptedModel),
                     speech: Arc::new(ScriptedSpeech),
                     embedder: Arc::new(ScriptedEmbedder),
+                    geocoder: Arc::new(ScriptedGeocoder),
                 };
                 let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
                 let addr = listener.local_addr().unwrap();
@@ -2366,6 +2371,21 @@ mod tests {
             texts: &[String],
         ) -> Result<Vec<Vec<f32>>, crate::embed::Error> {
             Ok(texts.iter().map(|_| vec![0.0; 1024]).collect())
+        }
+    }
+
+    struct ScriptedGeocoder;
+
+    #[async_trait::async_trait]
+    impl crate::places::Geocoder for ScriptedGeocoder {
+        async fn search(
+            &self,
+            _query: &str,
+        ) -> Result<crate::places::PlaceSearch, crate::places::Error> {
+            Ok(crate::places::PlaceSearch {
+                places: Vec::new(),
+                rejected_private: false,
+            })
         }
     }
 }

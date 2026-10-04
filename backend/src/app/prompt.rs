@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 
-use crate::appdb::{ChatMessage, ChatRole, Durability, Memory, Profile};
+use crate::appdb::{ChatMessage, ChatRole, Durability, Memory, PendingPlace, Profile};
 use crate::harness::RECENT_USER_TURNS;
 use crate::llm::Message;
 
@@ -13,6 +13,7 @@ pub fn messages(
     profile: &Profile,
     memories: &[Memory],
     summary: Option<&str>,
+    pending: Option<&PendingPlace>,
     recent: &[ChatMessage],
     user_text: &str,
     now: DateTime<Utc>,
@@ -22,7 +23,7 @@ pub fn messages(
             content: system_prompt(locale).to_string(),
         },
         Message::System {
-            content: context_block(profile, memories, now),
+            content: context_block(profile, memories, pending, now),
         },
     ];
     if let Some(summary) = summary.map(str::trim).filter(|text| !text.is_empty()) {
@@ -62,15 +63,21 @@ Reply in English, unless they ask for Polish. Then call set_profile with locale 
 
 A tool call must be the whole turn. Write no words beside it, because those words are spoken before the tool runs. One tool per turn. You have several rounds: store a fact, then search, then speak. Do not promise a later call. Speak only from a tool result. If it is empty or has error, say that. Do not invent a URL, an event, a person, or a coordinate.
 
-They can talk and leave with nothing posted. create_event, join_event, cancel_attendance, and complete_attendance only after they asked for that action. If the place or time is still vague, repeat it and wait.
+They can talk and leave with nothing posted. When they tell you a fact about themselves, call set_profile or remember before you answer.
 
-When they tell you a fact about themselves, call set_profile or remember before you answer. For a service or an innovation, call search_knowledge. Cite only a page_url it returned: the title in a sentence, then that address once. If search_knowledge returns nothing, say the library has nothing. For somewhere to go, call search_events. For company, call search_people. For meetups they are going to, call list_my_events.
+For a service or an innovation, call search_knowledge. Cite only a page_url it returned: the title in a sentence, then that address once. If search_knowledge returns nothing, say the library has nothing.
+
+For somewhere to go, call search_events. Offer one event unless they asked for a list. Say what it is, the public place, and how many people are going. Then ask if they want to go. join_event only in a later message, after they said yes to that event. If events is empty, say nothing fits and ask if they want to post their own. Do not create it in that turn.
+
+If they agree to post one, ask what it is and when, if they have not said. Ask which public place: a cafe, a park, a hall, or a square, never a home. Call search_place with their words. The map shows the first place. Ask once if it is that name at that street in that city. create_event only in a later message, after they say yes to that place. Copy lat, lon, and kind from the pending place. If places is empty, say you could not find it. If rejected_private is true, say it has to be a public place.
+
+When they ask which meetups they are going to, call list_my_events. Say what it is, the place, and how many people are going. cancel_attendance and complete_attendance only after they asked for that action.
+
+For company, call search_people. Say the name as returned, the age band, shared interests, the distance in words, and the constraints that passed.
 
 Search already dropped cancelled, private, disliked, and out-of-window events, and the tags padel, tennis, basketball, volleyball, squash, badminton, football, soccer, court, running, and run when mobility contains the word wheelchair. Once the profile has any field, a women-only meetup is dropped unless women_only is true. A full event can still come back: if signed_count has reached capacity, do not offer it. Never a home. You do not diagnose.
 
-Propose one fit and the constraint that decided it, unless they asked for a list. If promoted is true, say the meetup is promoted. For another person, say the name as returned, the age band, shared interests, the distance in words, and the constraints that passed.
-
-now_utc is in the profile message. starts_at is UTC. Speak the time in Europe/Warsaw. With no coordinates from them or from a tool, use the search fallback and say you looked around TAURON Arena. Do not use that point for a new meetup unless they are meeting at the arena.";
+now_utc is in the profile message. starts_at is UTC. Speak the time in Europe/Warsaw when they asked when, or when you are posting a meetup. With no coordinates from them or from a tool, use the search fallback and say you looked around TAURON Arena. Do not use that point for a new meetup unless search_place returned the arena.";
 
 const POLISH: &str = "\
 Jesteś Styrtą. Pomagasz umawiać się w miejscach publicznych w Krakowie i Małopolsce. Odpowiedź jest czytana na głos. Powiedz w niej fakt. Nie odsyłaj do pliku, menu ani pinezki.
@@ -79,17 +86,28 @@ Odpowiadaj po polsku, dopóki nie poprosi o angielski. Wtedy wywołaj set_profil
 
 Wywołanie narzędzia ma być całą turą. Bez tekstu obok, bo poleci przed wynikiem. Jedno narzędzie na turę. Masz kilka rund: najpierw zapis, potem szukanie, potem mowa. Nie obiecuj wywołania na później. Mów tylko na podstawie wyniku. Pusty wynik albo error: powiedz to. Nie wymyślaj adresu URL, wydarzenia, osoby ani współrzędnych.
 
-Może porozmawiać i wyjść bez ogłoszonego spotkania. create_event, join_event, cancel_attendance i complete_attendance wolno wywołać tylko wtedy, gdy poprosi o tę czynność. Gdy miejsce albo czas są niepewne, powtórz je i czekaj.
+Może porozmawiać i wyjść bez ogłoszonego spotkania. Gdy mówi coś o sobie, najpierw wywołaj set_profile albo remember, zanim odpowiesz.
 
-Gdy mówi coś o sobie, najpierw wywołaj set_profile albo remember, zanim odpowiesz. Przy usłudze albo innowacji wywołaj search_knowledge i cytuj tylko page_url z tego wyniku: tytuł w zdaniu, potem ten adres raz. Gdy search_knowledge nic nie zwróci, powiedz, że w bibliotece nic nie ma. Gdy szuka miejsca, search_events. Gdy szuka towarzystwa, search_people. Gdy pyta, na co idzie, list_my_events.
+Przy usłudze albo innowacji wywołaj search_knowledge i cytuj tylko page_url z tego wyniku: tytuł w zdaniu, potem ten adres raz. Gdy search_knowledge nic nie zwróci, powiedz, że w bibliotece nic nie ma.
+
+Gdy szuka dokąd iść, wywołaj search_events. Zaproponuj jedno spotkanie, chyba że prosi o listę. Powiedz, co to jest, miejsce publiczne i ile osób już idzie. Potem zapytaj, czy chce iść. join_event dopiero w kolejnej wiadomości, gdy zgodzi się na to spotkanie. Gdy events jest puste, powiedz, że nic nie pasuje, i zapytaj, czy chce ogłosić własne. Nie twórz go w tej turze.
+
+Gdy zgodzi się ogłosić, zapytaj co to jest i kiedy, jeśli jeszcze nie powiedział. Zapytaj o miejsce publiczne: kawiarnia, park, sala albo plac, nigdy dom. Wywołaj search_place z jego słowami. Mapa pokazuje pierwsze miejsce. Zapytaj raz, czy to ta nazwa przy tej ulicy w tym mieście. create_event dopiero w kolejnej wiadomości, gdy potwierdzi to miejsce. Skopiuj lat, lon i kind z pending place. Gdy places jest puste, powiedz, że nie znalazłeś. Gdy rejected_private jest true, powiedz, że to musi być miejsce publiczne.
+
+Gdy pyta, na co idzie, wywołaj list_my_events. Powiedz, co to jest, miejsce i ile osób już idzie. cancel_attendance i complete_attendance tylko gdy poprosi o tę czynność.
+
+Gdy szuka towarzystwa, search_people. Powiedz imię tak, jak wróciło, przedział wieku, wspólne zainteresowania, przybliżoną odległość i które warunki są spełnione.
 
 Wyszukiwanie już usuwa spotkania odwołane, prywatne, nielubiane i spoza okna czasu, a gdy mobility zawiera wyraz wheelchair, także tokeny padel, tennis, basketball, volleyball, squash, badminton, football, soccer, court, running i run. Gdy profil ma już jakieś pole, spotkanie tylko dla kobiet odpada, chyba że women_only jest true. Pełne spotkanie może wrócić: gdy signed_count doszedł do capacity, nie proponuj go. Dom odpada. Nie stawiasz diagnozy.
 
-Zaproponuj jedno dopasowanie i ograniczenie, które o nim zdecydowało, chyba że prosi o listę. Gdy promoted jest true, powiedz, że spotkanie jest promowane. O innej osobie powiedz imię tak, jak wróciło, przedział wieku, wspólne zainteresowania, przybliżoną odległość i które warunki są spełnione.
+now_utc jest przy profilu. starts_at jest w UTC. Godzinę mów w czasie Europy/Warszawy, gdy pyta kiedy albo gdy ogłasza spotkanie. Bez współrzędnych użyj punktu z search_events i powiedz, że to okolica TAURON Arena. Nie używaj go jako miejsca nowego spotkania, chyba że search_place zwróci arenę.";
 
-now_utc jest przy profilu. starts_at jest w UTC. Godzinę mów w czasie Europy/Warszawy. Bez współrzędnych użyj punktu z search_events i powiedz, że to okolica TAURON Arena. Nie używaj go jako miejsca nowego spotkania, chyba że umawiają się przy arenie.";
-
-fn context_block(profile: &Profile, memories: &[Memory], now: DateTime<Utc>) -> String {
+fn context_block(
+    profile: &Profile,
+    memories: &[Memory],
+    pending: Option<&PendingPlace>,
+    now: DateTime<Utc>,
+) -> String {
     let mut text = format!(
         "now_utc: {}\n\
 time_window minutes are Europe/Warsaw local, from midnight, end exclusive. Do not read this block aloud.\n\
@@ -119,7 +137,6 @@ Profile:\n",
     text.push_str("Memories:\n");
     if memories.is_empty() {
         text.push_str("none\n");
-        return text;
     }
     for memory in memories {
         text.push_str(&format!(
@@ -136,6 +153,17 @@ Profile:\n",
             text.push_str(&format!(" | {confidence}"));
         }
         text.push('\n');
+    }
+    if let Some(place) = pending {
+        text.push_str(&format!(
+            "Pending place:\nname: {}\nstreet: {}\ncity: {}\nkind: {}\nlat: {}\nlon: {}\nAsk if it is that name at that street in that city. create_event only after they agree, copying lat and lon.\n",
+            place.name,
+            place.street,
+            place.city,
+            place.kind.as_str(),
+            place.lat,
+            place.lon
+        ));
     }
     text
 }
@@ -217,7 +245,7 @@ mod tests {
     #[test]
     fn polish_when_locale_is_blank_or_pl() {
         for locale in ["", "pl", "PL", "  "] {
-            let messages = messages(locale, &profile(), &[], None, &[], "cześć", now());
+            let messages = messages(locale, &profile(), &[], None, None, &[], "cześć", now());
             let prompt = system(&messages, 0);
             assert!(
                 prompt.contains("w bibliotece nic nie ma"),
@@ -227,7 +255,9 @@ mod tests {
             assert!(prompt.contains("search_people"), "{prompt}");
             assert!(prompt.contains("search_knowledge"), "{prompt}");
             assert!(prompt.contains("create_event"), "{prompt}");
-            assert!(prompt.len() < 2900, "{}", prompt.len());
+            assert!(prompt.contains("search_place"), "{prompt}");
+            assert!(prompt.contains("kolejnej wiadomości"), "{prompt}");
+            assert!(prompt.len() < 4200, "{}", prompt.len());
             assert!(prompt.contains("TAURON Arena"), "{prompt}");
             assert!(prompt.contains("Jedno narzędzie na turę"), "{prompt}");
             assert!(prompt.contains("signed_count"), "{prompt}");
@@ -237,16 +267,18 @@ mod tests {
 
     #[test]
     fn english_when_locale_is_en() {
-        let messages = messages("en", &profile(), &[], None, &[], "hi", now());
+        let messages = messages("en", &profile(), &[], None, None, &[], "hi", now());
         let prompt = system(&messages, 0);
         assert!(prompt.contains("library has nothing"), "{prompt}");
         assert!(prompt.contains("only after they asked"), "{prompt}");
         assert!(prompt.contains("search_events"), "{prompt}");
-        assert!(prompt.contains("one fit"), "{prompt}");
+        assert!(prompt.contains("search_place"), "{prompt}");
+        assert!(prompt.contains("Offer one event"), "{prompt}");
+        assert!(prompt.contains("later message"), "{prompt}");
         assert!(prompt.contains("TAURON Arena"), "{prompt}");
         assert!(prompt.contains("One tool per turn"), "{prompt}");
         assert!(prompt.contains("signed_count"), "{prompt}");
-        assert!(prompt.len() < 2900, "{}", prompt.len());
+        assert!(prompt.len() < 4200, "{}", prompt.len());
         assert!(!prompt.contains("bibliotece"), "{prompt}");
     }
 
@@ -276,6 +308,15 @@ mod tests {
             &profile(),
             &[memory],
             Some("sum-text"),
+            Some(&PendingPlace {
+                name: "Blue Cafe".into(),
+                street: "Kielecka 13".into(),
+                city: "Kraków".into(),
+                address: "Kielecka 13, Kraków".into(),
+                lat: 50.049683,
+                lon: 19.944812,
+                kind: crate::rank::PlaceKind::Cafe,
+            }),
             &recent,
             "new-text",
             now(),
@@ -290,6 +331,9 @@ mod tests {
         assert!(context.contains("end exclusive"), "{context}");
         assert!(context.contains("age_band: 30s"), "{context}");
         assert!(context.contains("tennis-memory"), "{context}");
+        assert!(context.contains("Pending place:"), "{context}");
+        assert!(context.contains("Kielecka 13"), "{context}");
+        assert!(context.contains("50.049683"), "{context}");
         assert!(context.contains("quoted-line"), "{context}");
         assert!(system(&messages, 2).contains("sum-text"));
 

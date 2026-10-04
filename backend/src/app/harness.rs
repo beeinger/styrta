@@ -21,9 +21,10 @@ use crate::llm::{
 use crate::prompt;
 use crate::rank::{self, Candidate, Person};
 use crate::speech::Speech;
+use crate::places::Geocoder;
 use crate::sse::{
-    AudioReady, Kind, ReplyDelta, ReplyDone, ToolFinished, ToolStarted, TranscriptReady,
-    TurnFailed, TurnRef,
+    AudioReady, EventDraft, Kind, ReplyDelta, ReplyDone, ToolFinished, ToolStarted,
+    TranscriptReady, TurnFailed, TurnRef,
 };
 use crate::tools::{self, ToolContext};
 
@@ -98,6 +99,12 @@ pub trait HarnessStore: Send + Sync {
     async fn profile(&self, user_id: Uuid) -> Result<Profile, StoreError>;
     async fn memories(&self, user_id: Uuid) -> Result<Vec<Memory>, StoreError>;
     async fn conversation(&self, user_id: Uuid) -> Result<Conversation, StoreError>;
+    async fn set_pending_place(
+        &self,
+        user_id: Uuid,
+        place: &crate::appdb::PendingPlace,
+    ) -> Result<(), StoreError>;
+    async fn clear_pending_place(&self, user_id: Uuid) -> Result<(), StoreError>;
     async fn recent_turns(
         &self,
         user_id: Uuid,
@@ -200,6 +207,22 @@ impl HarnessStore for Store {
 
     async fn conversation(&self, user_id: Uuid) -> Result<Conversation, StoreError> {
         Store::conversation(self, user_id)
+            .await
+            .map_err(StoreError::new)
+    }
+
+    async fn set_pending_place(
+        &self,
+        user_id: Uuid,
+        place: &crate::appdb::PendingPlace,
+    ) -> Result<(), StoreError> {
+        Store::set_pending_place(self, user_id, place)
+            .await
+            .map_err(StoreError::new)
+    }
+
+    async fn clear_pending_place(&self, user_id: Uuid) -> Result<(), StoreError> {
+        Store::clear_pending_place(self, user_id)
             .await
             .map_err(StoreError::new)
     }
@@ -400,6 +423,7 @@ pub struct Services<'a, S = Store> {
     pub model: &'a dyn Model,
     pub speech: &'a dyn Speech,
     pub embedder: &'a dyn Embedder,
+    pub geocoder: &'a dyn Geocoder,
     pub config: &'a Config,
 }
 
@@ -503,11 +527,20 @@ async fn drive<S: HarnessStore>(services: Services<'_, S>, turn_id: Uuid) -> Res
             content: assistant.content.clone(),
             tool_calls: calls.clone(),
         });
+        let (listed_events, proposed_place) = awaiting_confirmation(&checkpoint.messages);
         for call in &calls {
             if already_executed(&checkpoint, &call.id) {
                 checkpoint
                     .messages
                     .push(tool_message(call, &json!({"error": "already completed"})));
+                continue;
+            }
+            if let Some(message) = confirm_first(&call.name, listed_events, proposed_place) {
+                checkpoint
+                    .messages
+                    .push(tool_message(call, &json!({"error": message})));
+                checkpoint.executed_tool_ids.push(call.id.clone());
+                save_checkpoint(store, turn_id, &checkpoint).await?;
                 continue;
             }
             let (tool_name, label) = tool_label(&call.name);
@@ -528,6 +561,7 @@ async fn drive<S: HarnessStore>(services: Services<'_, S>, turn_id: Uuid) -> Res
                 ToolContext {
                     store,
                     embedder: services.embedder,
+                    geocoder: services.geocoder,
                     user_id,
                     now: Utc::now(),
                 },
@@ -535,7 +569,26 @@ async fn drive<S: HarnessStore>(services: Services<'_, S>, turn_id: Uuid) -> Res
             )
             .await;
             let (body, ok, event_id, hit_count) = match outcome {
-                Ok(result) => (result.body, true, result.event_id, result.hit_count),
+                Ok(result) => {
+                    if let Some(place) = result.draft {
+                        emit(
+                            store,
+                            user_id,
+                            turn_id,
+                            Kind::EventDraft,
+                            &EventDraft {
+                                turn_id,
+                                name: place.name,
+                                address: place.address,
+                                lat: place.latitude,
+                                lon: place.longitude,
+                                kind: place.kind.as_str().to_string(),
+                            },
+                        )
+                        .await?;
+                    }
+                    (result.body, true, result.event_id, result.hit_count)
+                }
                 Err(err) => (json!({"error": err.to_string()}), false, None, None),
             };
             emit(
@@ -679,6 +732,7 @@ async fn fresh<S: HarnessStore>(
         &profile,
         &memories,
         conversation.summary.as_deref(),
+        conversation.pending_place.as_ref(),
         &recent,
         &user_text,
         Utc::now(),
@@ -880,6 +934,36 @@ fn already_executed(checkpoint: &Checkpoint, id: &str) -> bool {
     checkpoint.executed_tool_ids.iter().any(|done| done == id)
 }
 
+fn awaiting_confirmation(messages: &[Message]) -> (bool, bool) {
+    let mut listed_events = false;
+    let mut proposed_place = false;
+    for message in messages {
+        let Message::Assistant { tool_calls, .. } = message else {
+            continue;
+        };
+        for call in tool_calls {
+            match tools::ToolName::parse(&call.name) {
+                Some(tools::ToolName::SearchEvents) => listed_events = true,
+                Some(tools::ToolName::SearchPlace) => proposed_place = true,
+                _ => {}
+            }
+        }
+    }
+    (listed_events, proposed_place)
+}
+
+fn confirm_first(name: &str, listed_events: bool, proposed_place: bool) -> Option<&'static str> {
+    match tools::ToolName::parse(name) {
+        Some(tools::ToolName::JoinEvent) if listed_events => {
+            Some("ask if they want to go before joining")
+        }
+        Some(tools::ToolName::CreateEvent) if proposed_place => {
+            Some("ask if this is the place before creating")
+        }
+        _ => None,
+    }
+}
+
 fn tool_label(name: &str) -> (String, String) {
     match tools::ToolName::parse(name) {
         Some(tool) => (tool.as_str().to_string(), tool.label().to_string()),
@@ -973,8 +1057,10 @@ mod tests {
     };
     use crate::config::Config;
     use crate::embed::{Embedder, Input};
+    use crate::appdb::PendingPlace;
     use crate::knowledge::Hit;
     use crate::llm::{Model, ModelStream, ToolCall};
+    use crate::places::{Geocoder, PlaceHit, PlaceSearch};
     use crate::speech::Speech;
 
     fn event_id_args(id: Uuid) -> String {
@@ -985,6 +1071,30 @@ mod tests {
         format!(
             r#"{{"title":"Tennis","emoji":"{emoji}","starts_at":"2026-10-04T10:00:00Z","place_name":"Park","kind":"park","lat":52.2,"lon":21.0,"capacity":4,"description":"Hit","activity_tags":["tennis"]}}"#
         )
+    }
+
+    fn park_pending() -> PendingPlace {
+        PendingPlace {
+            name: "Park".into(),
+            street: "Parkowa 1".into(),
+            city: "Kraków".into(),
+            address: "Parkowa 1, Kraków".into(),
+            lat: 52.2,
+            lon: 21.0,
+            kind: PlaceKind::Park,
+        }
+    }
+
+    fn cafe_hit() -> PlaceHit {
+        PlaceHit {
+            name: "Blue Cafe".into(),
+            street: "Kielecka 13".into(),
+            city: "Kraków".into(),
+            address: "Kielecka 13, Kraków".into(),
+            latitude: 50.049683,
+            longitude: 19.944812,
+            kind: PlaceKind::Cafe,
+        }
     }
 
     fn tool_call(id: &str, name: &str, arguments: &str) -> ToolCall {
@@ -1146,6 +1256,35 @@ mod tests {
         }
     }
 
+    struct FakeGeocoder {
+        result: Mutex<PlaceSearch>,
+    }
+
+    impl FakeGeocoder {
+        fn empty() -> Self {
+            Self {
+                result: Mutex::new(PlaceSearch {
+                    places: Vec::new(),
+                    rejected_private: false,
+                }),
+            }
+        }
+
+        fn set(&self, result: PlaceSearch) {
+            *self.result.lock().expect("geocoder") = result;
+        }
+    }
+
+    #[async_trait]
+    impl Geocoder for FakeGeocoder {
+        async fn search(&self, query: &str) -> Result<PlaceSearch, crate::places::Error> {
+            if query.trim().is_empty() {
+                return Err(crate::places::Error::EmptyQuery);
+            }
+            Ok(self.result.lock().expect("geocoder").clone())
+        }
+    }
+
     struct FakeInner {
         user: User,
         profile: Profile,
@@ -1203,6 +1342,7 @@ mod tests {
                         user_id,
                         summary: None,
                         summary_through: None,
+                        pending_place: None,
                     },
                     remember_writes: 0,
                     profile_writes: 0,
@@ -1402,6 +1542,20 @@ mod tests {
 
         async fn conversation(&self, _user_id: Uuid) -> Result<Conversation, StoreError> {
             Ok(self.lock().conversation.clone())
+        }
+
+        async fn set_pending_place(
+            &self,
+            _user_id: Uuid,
+            place: &crate::appdb::PendingPlace,
+        ) -> Result<(), StoreError> {
+            self.lock().conversation.pending_place = Some(place.clone());
+            Ok(())
+        }
+
+        async fn clear_pending_place(&self, _user_id: Uuid) -> Result<(), StoreError> {
+            self.lock().conversation.pending_place = None;
+            Ok(())
         }
 
         async fn recent_turns(
@@ -1852,6 +2006,7 @@ mod tests {
         model: ScriptedModel,
         speech: FakeSpeech,
         embedder: FakeEmbedder,
+        geocoder: FakeGeocoder,
         config: Config,
         user_id: Uuid,
         turn_id: Uuid,
@@ -1868,6 +2023,7 @@ mod tests {
                 model: ScriptedModel::new(),
                 speech: FakeSpeech::new(),
                 embedder: FakeEmbedder,
+                geocoder: FakeGeocoder::empty(),
                 config: test_config(&audio_dir),
                 user_id,
                 turn_id,
@@ -1880,6 +2036,7 @@ mod tests {
                 model: &self.model,
                 speech: &self.speech,
                 embedder: &self.embedder,
+                geocoder: &self.geocoder,
                 config: &self.config,
             }
         }
@@ -1986,6 +2143,11 @@ mod tests {
         let world = World::new("pl", "załóż i dołącz");
         let event_id = Uuid::from_u128(42);
         world.store.set_next_event_id(event_id);
+        world
+            .store
+            .set_pending_place(world.user_id, &park_pending())
+            .await
+            .expect("pending");
         let args = event_id_args(event_id);
         world.model.push_tools(vec![
             tool_call("c", "create_event", &create_args("🎾")),
@@ -2003,6 +2165,132 @@ mod tests {
         assert_eq!(world.store.complete_calls(), vec![event_id]);
         let attendance = world.store.lock().attendances[0].clone();
         assert_eq!(attendance.status, AttendanceStatus::Completed);
+        assert!(world
+            .store
+            .conversation(world.user_id)
+            .await
+            .unwrap()
+            .pending_place
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn create_without_a_confirmed_place_does_not_write() {
+        let world = World::new("en", "make it");
+        world
+            .model
+            .push_tools(vec![tool_call("c", "create_event", &create_args("🎾"))]);
+        world.model.push_text("I need the place first.");
+        world.run().await.expect("turn");
+        assert_eq!(world.store.create_writes(), 0);
+        let bodies = tool_bodies(&world.model.stream_messages()[1]);
+        assert!(
+            bodies[0]["error"]
+                .as_str()
+                .is_some_and(|text| text.contains("search for a public place")),
+            "{bodies:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_place_pins_a_draft_and_does_not_create_yet() {
+        let world = World::new("en", "at the blue cafe");
+        world.geocoder.set(PlaceSearch {
+            places: vec![cafe_hit()],
+            rejected_private: false,
+        });
+        world.model.push_tools(vec![tool_call(
+            "p",
+            "search_place",
+            r#"{"query":"Blue Cafe Kraków"}"#,
+        )]);
+        world.model.push_tools(vec![tool_call(
+            "c",
+            "create_event",
+            r#"{"title":"Coffee","emoji":"☕","starts_at":"2026-10-04T10:00:00Z","place_name":"Blue Cafe","kind":"cafe","lat":50.049683,"lon":19.944812}"#,
+        )]);
+        world
+            .model
+            .push_text("Is it the Blue Cafe at Kielecka 13 in Kraków?");
+        world.run().await.expect("turn");
+        assert_eq!(world.store.create_writes(), 0);
+        let pending = world
+            .store
+            .conversation(world.user_id)
+            .await
+            .unwrap()
+            .pending_place
+            .unwrap();
+        assert_eq!(pending.street, "Kielecka 13");
+        let draft = world
+            .store
+            .replay(world.user_id)
+            .into_iter()
+            .find(|event| event.kind == "event.draft")
+            .expect("draft");
+        assert_eq!(draft.payload["name"], "Blue Cafe");
+        assert_eq!(draft.payload["address"], "Kielecka 13, Kraków");
+        assert_eq!(draft.payload["kind"], "cafe");
+        let bodies = tool_bodies(&world.model.stream_messages()[2]);
+        assert!(
+            bodies.iter().any(|body| body["error"]
+                .as_str()
+                .is_some_and(|text| text.contains("before creating"))),
+            "{bodies:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn confirmed_place_is_what_gets_created() {
+        let world = World::new("en", "yes, that cafe");
+        world
+            .store
+            .set_pending_place(
+                world.user_id,
+                &PendingPlace {
+                    name: "Blue Cafe".into(),
+                    street: "Kielecka 13".into(),
+                    city: "Kraków".into(),
+                    address: "Kielecka 13, Kraków".into(),
+                    lat: 50.049683,
+                    lon: 19.944812,
+                    kind: PlaceKind::Cafe,
+                },
+            )
+            .await
+            .unwrap();
+        world.model.push_tools(vec![tool_call(
+            "c",
+            "create_event",
+            r#"{"title":"Coffee","emoji":"☕","starts_at":"2026-10-04T10:00:00Z","place_name":"somewhere","kind":"park","lat":50.05,"lon":19.945}"#,
+        )]);
+        world.model.push_text("You're on for coffee.");
+        world.run().await.expect("turn");
+        assert_eq!(world.store.create_writes(), 1);
+        let event = &world.store.events()[0];
+        assert_eq!(event.place_name, "Blue Cafe");
+        assert_eq!(event.place_kind, PlaceKind::Cafe);
+        assert!((event.latitude - 50.049683).abs() < 1e-9);
+        assert!(world
+            .store
+            .conversation(world.user_id)
+            .await
+            .unwrap()
+            .pending_place
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn join_waits_until_a_later_message() {
+        let world = World::new("en", "find me something");
+        let event_id = Uuid::from_u128(7);
+        world.model.push_tools(vec![
+            tool_call("s", "search_events", r#"{"lat":50.06,"lng":19.94}"#),
+            tool_call("j", "join_event", &event_id_args(event_id)),
+        ]);
+        world.model.push_text("Want to go?");
+        world.run().await.expect("turn");
+        assert!(world.store.join_calls().is_empty());
     }
 
     #[tokio::test]

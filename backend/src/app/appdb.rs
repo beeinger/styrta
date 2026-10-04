@@ -601,13 +601,56 @@ impl Store {
     }
 
     pub async fn conversation(&self, user_id: Uuid) -> Result<Conversation, Error> {
-        sqlx::query_as(
-            "SELECT user_id, summary, summary_through FROM conversations WHERE user_id = $1",
+        let row: ConversationRow = sqlx::query_as(
+            "SELECT user_id, summary, summary_through, pending_place FROM conversations WHERE user_id = $1",
         )
         .bind(user_id)
         .fetch_one(&self.pool)
         .await
-        .map_err(db)
+        .map_err(db)?;
+        let pending_place = match row.pending_place {
+            Some(value) => Some(
+                serde_json::from_value(value).map_err(|_| Error::Invalid)?,
+            ),
+            None => None,
+        };
+        Ok(Conversation {
+            user_id: row.user_id,
+            summary: row.summary,
+            summary_through: row.summary_through,
+            pending_place,
+        })
+    }
+
+    pub async fn set_pending_place(
+        &self,
+        user_id: Uuid,
+        place: &PendingPlace,
+    ) -> Result<(), Error> {
+        let value = serde_json::to_value(place).map_err(|_| Error::Invalid)?;
+        let updated = sqlx::query(
+            "UPDATE conversations SET pending_place = $2 WHERE user_id = $1",
+        )
+        .bind(user_id)
+        .bind(value)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?
+        .rows_affected();
+        if updated == 0 {
+            Err(Error::NotFound)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub async fn clear_pending_place(&self, user_id: Uuid) -> Result<(), Error> {
+        sqlx::query("UPDATE conversations SET pending_place = NULL WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(())
     }
 
     pub async fn set_summary(
@@ -1869,11 +1912,31 @@ pub struct Attendance {
     pub status: AttendanceStatus,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, sqlx::FromRow)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Conversation {
     pub user_id: Uuid,
     pub summary: Option<String>,
     pub summary_through: Option<Uuid>,
+    pub pending_place: Option<PendingPlace>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PendingPlace {
+    pub name: String,
+    pub street: String,
+    pub city: String,
+    pub address: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub kind: PlaceKind,
+}
+
+#[derive(sqlx::FromRow)]
+struct ConversationRow {
+    user_id: Uuid,
+    summary: Option<String>,
+    summary_through: Option<Uuid>,
+    pending_place: Option<Value>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2034,7 +2097,14 @@ mod tests {
                 .fetch_all(store.pool())
                 .await
                 .unwrap_or_else(|err| panic!("versions: {}", redact(&err.to_string())));
-                assert_eq!(versions, vec![1, 2, 3]);
+                assert_eq!(versions, vec![1, 2, 3, 4]);
+                let pending: i64 = sqlx::query_scalar(
+                    "SELECT count(*)::bigint FROM information_schema.columns WHERE table_name = 'conversations' AND column_name = 'pending_place'",
+                )
+                .fetch_one(store.pool())
+                .await
+                .unwrap_or_else(|err| panic!("pending column: {}", redact(&err.to_string())));
+                assert_eq!(pending, 1);
                 store.pool().close().await;
                 again.pool().close().await;
             })
@@ -2092,6 +2162,34 @@ mod tests {
         assert_eq!(conversation.user_id, user.id);
         assert!(conversation.summary.is_none());
         assert!(conversation.summary_through.is_none());
+        assert!(conversation.pending_place.is_none());
+    }
+
+    #[tokio::test]
+    async fn pending_place_round_trips_and_clears() {
+        let store = schema_store().await;
+        let user = store.create_user("Cafe", "pl").await.unwrap();
+        let place = PendingPlace {
+            name: "Blue Cafe".into(),
+            street: "Kielecka 13".into(),
+            city: "Kraków".into(),
+            address: "Kielecka 13, Kraków".into(),
+            lat: 50.049683,
+            lon: 19.944812,
+            kind: PlaceKind::Cafe,
+        };
+        store.set_pending_place(user.id, &place).await.unwrap();
+        let loaded = store.conversation(user.id).await.unwrap();
+        assert_eq!(loaded.pending_place.as_ref().unwrap().name, "Blue Cafe");
+        assert_eq!(loaded.pending_place.as_ref().unwrap().kind, PlaceKind::Cafe);
+        assert!((loaded.pending_place.as_ref().unwrap().lat - 50.049683).abs() < 1e-9);
+        store.clear_pending_place(user.id).await.unwrap();
+        assert!(store
+            .conversation(user.id)
+            .await
+            .unwrap()
+            .pending_place
+            .is_none());
     }
 
     #[tokio::test]
@@ -2757,7 +2855,7 @@ mod tests {
                 .fetch_all(store.pool())
                 .await
                 .unwrap();
-        assert_eq!(versions, vec![1, 2, 3]);
+        assert_eq!(versions, vec![1, 2, 3, 4]);
     }
 
     async fn ingest_counts(pool: &PgPool) -> (i64, i64, i64, i64, i64) {

@@ -22,3 +22,6 @@
 # EMBED_PASSAGE_PREFIX="passage: "
 # STYRTA_JWT_SECRET="replace-me"
 # STYRTA_AUDIO_DIR="/var/lib/styrta/audio"
+# Public place lookup. Defaults to OpenStreetMap Nominatim. No key.
+# GEOCODER_BASE_URL="https://nominatim.openstreetmap.org"
+# GEOCODER_USER_AGENT="styrta/1.0 (public place search)"

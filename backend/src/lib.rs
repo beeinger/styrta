@@ -16,6 +16,8 @@ pub mod harness;
 pub mod knowledge;
 #[path = "app/llm.rs"]
 pub mod llm;
+#[path = "app/places.rs"]
+pub mod places;
 #[path = "app/prompt.rs"]
 pub mod prompt;
 #[path = "app/rank.rs"]

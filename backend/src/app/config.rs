@@ -25,6 +25,8 @@ pub struct Config {
     pub database_url: String,
     pub audio_dir: PathBuf,
     pub work_dir: PathBuf,
+    pub geocoder_base_url: String,
+    pub geocoder_user_agent: String,
 }
 
 impl std::fmt::Debug for Config {
@@ -49,6 +51,8 @@ impl std::fmt::Debug for Config {
             .field("database_url", &"<redacted>")
             .field("audio_dir", &self.audio_dir)
             .field("work_dir", &self.work_dir)
+            .field("geocoder_base_url", &self.geocoder_base_url)
+            .field("geocoder_user_agent", &self.geocoder_user_agent)
             .finish()
     }
 }
@@ -82,6 +86,7 @@ impl Config {
         let jwt_secret = require(&mut lookup, "STYRTA_JWT_SECRET")?;
         let database_url = require(&mut lookup, "DATABASE_URL")?;
         let audio_dir = audio_dir(&mut lookup)?;
+        let (geocoder_base_url, geocoder_user_agent) = geocoder_settings(&mut lookup)?;
         Ok(Self {
             llm_base_url: chat.base_url,
             llm_api_key: chat.api_key,
@@ -102,6 +107,8 @@ impl Config {
             database_url,
             audio_dir,
             work_dir: PathBuf::from("/tmp/styrta-ingest"),
+            geocoder_base_url,
+            geocoder_user_agent,
         })
     }
 
@@ -129,6 +136,8 @@ impl Config {
             database_url,
             audio_dir: PathBuf::from("/var/lib/styrta/audio"),
             work_dir,
+            geocoder_base_url: String::new(),
+            geocoder_user_agent: String::new(),
         })
     }
 
@@ -155,8 +164,33 @@ impl Config {
             database_url,
             audio_dir: PathBuf::from("/var/lib/styrta/audio"),
             work_dir: PathBuf::from("/tmp/styrta-ingest"),
+            geocoder_base_url: String::new(),
+            geocoder_user_agent: String::new(),
         })
     }
+}
+
+const NOMINATIM: &str = "https://nominatim.openstreetmap.org";
+
+fn geocoder_settings(lookup: &mut impl FnMut(&str) -> Option<String>) -> Result<(String, String)> {
+    let configured = optional(lookup, "GEOCODER_BASE_URL");
+    let base = if configured.is_empty() {
+        NOMINATIM.to_string()
+    } else {
+        base_url("GEOCODER_BASE_URL", &configured)?
+    };
+    let configured_agent = optional(lookup, "GEOCODER_USER_AGENT");
+    let agent = if configured_agent.is_empty() {
+        let chat = optional(lookup, "LLM_USER_AGENT");
+        if chat.is_empty() {
+            "styrta/1.0 (public place search)".to_string()
+        } else {
+            chat
+        }
+    } else {
+        configured_agent
+    };
+    Ok((base, agent))
 }
 
 struct ChatSettings {
@@ -346,6 +380,8 @@ mod tests {
             "STYRTA_JWT_SECRET",
             "DATABASE_URL",
             "STYRTA_AUDIO_DIR",
+            "GEOCODER_BASE_URL",
+            "GEOCODER_USER_AGENT",
         ];
         Config::from_lookup(|key| {
             assert!(ALLOWED.contains(&key), "config read {key}");
@@ -400,6 +436,31 @@ mod tests {
         assert!(!debug.contains("llm-secret-value"));
         assert!(!debug.contains("jwt-secret-value"));
         assert!(!debug.contains("password"));
+    }
+
+    #[test]
+    fn geocoder_defaults_to_nominatim_and_can_be_overridden() {
+        let cfg = load(&complete()).unwrap();
+        assert_eq!(
+            cfg.geocoder_base_url,
+            "https://nominatim.openstreetmap.org"
+        );
+        assert_eq!(cfg.geocoder_user_agent, "styrta/1.0 (public place search)");
+
+        let mut map = complete();
+        map.insert(
+            "GEOCODER_BASE_URL".into(),
+            " http://127.0.0.1:9/geo/ ".into(),
+        );
+        map.insert("GEOCODER_USER_AGENT".into(), " styrta-test/2 ".into());
+        let cfg = load(&map).unwrap();
+        assert_eq!(cfg.geocoder_base_url, "http://127.0.0.1:9/geo");
+        assert_eq!(cfg.geocoder_user_agent, "styrta-test/2");
+
+        map.insert("GEOCODER_USER_AGENT".into(), "".into());
+        map.insert("LLM_USER_AGENT".into(), "chat-agent/1".into());
+        let cfg = load(&map).unwrap();
+        assert_eq!(cfg.geocoder_user_agent, "chat-agent/1");
     }
 
     #[test]

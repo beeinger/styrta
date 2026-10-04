@@ -212,6 +212,8 @@ mod tests {
             database_url: "postgres://127.0.0.1/styrta".into(),
             audio_dir: std::path::PathBuf::from("/var/lib/styrta/audio"),
             work_dir: std::path::PathBuf::from("/tmp/styrta-ingest"),
+            geocoder_base_url: String::new(),
+            geocoder_user_agent: String::new(),
         }
     }
 

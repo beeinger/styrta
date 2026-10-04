@@ -75,6 +75,17 @@ impl PlaceKind {
     pub fn is_public(self) -> bool {
         !matches!(self, Self::NotPublic)
     }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cafe => "cafe",
+            Self::Park => "park",
+            Self::Hall => "hall",
+            Self::Square => "square",
+            Self::OtherPublic => "other_public",
+            Self::NotPublic => "not_public",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
