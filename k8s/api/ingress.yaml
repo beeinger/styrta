@@ -1,0 +1,29 @@
+# HTTPS via Traefik + Let's Encrypt (cert resolver name: default).
+# DNS: api.styrta.energia.dev → cluster; WAN 80/443 → Traefik.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: serve
+  namespace: styrta
+  labels:
+    app.kubernetes.io/name: serve
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.tls.certresolver: default
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: api.styrta.energia.dev
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: serve
+                port:
+                  number: 8088
+  tls:
+    - hosts:
+        - api.styrta.energia.dev

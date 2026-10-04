@@ -1,4 +1,3 @@
-# Not applied. Load order: empty database, pg_restore of the verified dump, then migration 002.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -22,7 +21,7 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: postgres
-          image: postgres:16
+          image: pgvector/pgvector:pg16
           imagePullPolicy: IfNotPresent
           ports:
             - name: postgres
@@ -42,14 +41,15 @@ spec:
                   key: password
           resources:
             requests:
-              cpu: "1"
-              memory: 2Gi
+              cpu: 100m
+              memory: 256Mi
             limits:
               cpu: "1"
-              memory: 2Gi
+              memory: 1Gi
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
+              subPath: pgdata
           readinessProbe:
             exec:
               command: ["pg_isready", "-h", "127.0.0.1", "-p", "5432"]

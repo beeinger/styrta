@@ -1,0 +1,15 @@
+# Spoken replies. Replay reads these files back.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: serve-audio
+  namespace: styrta
+  labels:
+    app.kubernetes.io/name: serve
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: longhorn-default
+  resources:
+    requests:
+      storage: 1Gi

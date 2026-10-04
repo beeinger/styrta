@@ -1,4 +1,3 @@
-# Not applied. Load order: empty database, pg_restore of the verified dump, then migration 002.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -8,6 +7,8 @@ metadata:
     app.kubernetes.io/name: serve
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: serve
@@ -20,9 +21,8 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: serve
-          image: styrta-serve:local
+          image: 192.168.10.3:30500/styrta-serve:20261003
           imagePullPolicy: IfNotPresent
-          command: ["serve"]
           ports:
             - name: http
               containerPort: 8088
@@ -32,36 +32,31 @@ spec:
                 secretKeyRef:
                   name: serve
                   key: DATABASE_URL
-            - name: STYRTA_WORK_DIR
+            - name: LLM_BASE_URL
               valueFrom:
                 secretKeyRef:
                   name: serve
-                  key: STYRTA_WORK_DIR
-            - name: OPENAI_BASE_URL
+                  key: LLM_BASE_URL
+            - name: LLM_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: serve
-                  key: OPENAI_BASE_URL
-            - name: OPENAI_API_KEY
+                  key: LLM_API_KEY
+            - name: LLM_MODEL
               valueFrom:
                 secretKeyRef:
                   name: serve
-                  key: OPENAI_API_KEY
-            - name: OPENAI_MODEL
+                  key: LLM_MODEL
+            - name: LLM_TIMEOUT_SECS
               valueFrom:
                 secretKeyRef:
                   name: serve
-                  key: OPENAI_MODEL
-            - name: OPENAI_TIMEOUT_SECS
+                  key: LLM_TIMEOUT_SECS
+            - name: LLM_USER_AGENT
               valueFrom:
                 secretKeyRef:
                   name: serve
-                  key: OPENAI_TIMEOUT_SECS
-            - name: OPENAI_USER_AGENT
-              valueFrom:
-                secretKeyRef:
-                  name: serve
-                  key: OPENAI_USER_AGENT
+                  key: LLM_USER_AGENT
             - name: SPEECH_BASE_URL
               valueFrom:
                 secretKeyRef:
@@ -124,8 +119,33 @@ spec:
                   key: STYRTA_AUDIO_DIR
           resources:
             requests:
-              cpu: "500m"
-              memory: 512Mi
+              cpu: 100m
+              memory: 128Mi
             limits:
               cpu: "1"
-              memory: 1Gi
+              memory: 512Mi
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 24
+          volumeMounts:
+            - name: audio
+              mountPath: /var/lib/styrta/audio
+      volumes:
+        - name: audio
+          persistentVolumeClaim:
+            claimName: serve-audio
