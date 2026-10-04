@@ -6,7 +6,7 @@ export type MapMarker = {
   emoji: string;
   hostName: string;
   signedCount: number;
-  capacity: number;
+  capacity: number | null;
   startsAtLabel: string;
 };
 
@@ -245,6 +245,20 @@ export function createMapHtml(options: MapDocumentOptions): string {
           }
         }
 
+        function countText(item) {
+          if (item.capacity == null) {
+            return String(item.signedCount);
+          }
+          return item.signedCount + "/" + item.capacity;
+        }
+
+        function peopleText(item) {
+          if (item.capacity == null) {
+            return item.signedCount + " people";
+          }
+          return item.signedCount + " of " + item.capacity + " people";
+        }
+
         function markerLabel(item) {
           return (
             item.title +
@@ -253,11 +267,27 @@ export function createMapHtml(options: MapDocumentOptions): string {
             ", hosted by " +
             item.hostName +
             ", " +
-            item.signedCount +
-            " of " +
-            item.capacity +
-            " people"
+            peopleText(item)
           );
+        }
+
+        function postViewport() {
+          const center = map.getCenter();
+          const bounds = map.getBounds();
+          post({
+            type: "viewport",
+            latitude: center.lat,
+            longitude: center.lng,
+            zoom: map.getZoom(),
+            bbox:
+              bounds.getWest() +
+              "," +
+              bounds.getSouth() +
+              "," +
+              bounds.getEast() +
+              "," +
+              bounds.getNorth(),
+          });
         }
 
         function setSelected(id) {
@@ -303,7 +333,7 @@ export function createMapHtml(options: MapDocumentOptions): string {
 
             const count = document.createElement("p");
             count.className = "event-count";
-            count.textContent = item.signedCount + "/" + item.capacity;
+            count.textContent = countText(item);
 
             const tail = document.createElement("div");
             tail.className = "event-card-tail";
@@ -418,6 +448,10 @@ export function createMapHtml(options: MapDocumentOptions): string {
 
         markerLayer.addTo(map);
 
+        map.on("moveend", () => {
+          postViewport();
+        });
+
         map.on("zoomend", () => {
           post({
             type: "zoom",
@@ -425,6 +459,7 @@ export function createMapHtml(options: MapDocumentOptions): string {
             source: zoomSource,
           });
           zoomSource = "gesture";
+          postViewport();
         });
 
         map.on("click", () => {
@@ -437,6 +472,7 @@ export function createMapHtml(options: MapDocumentOptions): string {
 
         map.whenReady(() => {
           post({ type: "ready", zoom: map.getZoom() });
+          postViewport();
         });
       })();
     </script>

@@ -5,12 +5,26 @@ export type MeetupEvent = {
   emoji: string;
   title: string;
   signedCount: number;
-  capacity: number;
+  capacity: number | null;
   latitude: number;
   longitude: number;
   hostName: string;
   startsAt: string;
 };
+
+export function formatAttendance(signedCount: number, capacity: number | null): string {
+  if (capacity == null) {
+    return String(signedCount);
+  }
+  return `${signedCount}/${capacity}`;
+}
+
+export function describeAttendance(signedCount: number, capacity: number | null): string {
+  if (capacity == null) {
+    return `${signedCount} people`;
+  }
+  return `${signedCount} of ${capacity} people`;
+}
 
 export function formatEventStart(startsAt: string): string {
   return new Intl.DateTimeFormat("en-GB", {
@@ -27,5 +41,5 @@ export function formatEventStart(startsAt: string): string {
 export const events = eventsData as MeetupEvent[];
 
 export const visibleEvents = events.filter(
-  (event) => event.signedCount < event.capacity,
+  (event) => event.capacity != null && event.signedCount < event.capacity,
 );

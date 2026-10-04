@@ -16,8 +16,9 @@ import * as Location from "expo-location";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 
-import { formatEventStart, visibleEvents, type MeetupEvent } from "../data/events";
-import { attendingEvents } from "../data/session";
+import { getMyEvents, getNearbyEvents, signIn as requestSignIn, signUp as requestSignUp } from "../api/client";
+import { ApiError, type MyEvent, type NearbyEvent, type Session } from "../api/types";
+import { describeAttendance, formatEventStart, type MeetupEvent } from "../data/events";
 import { AiChatSheet } from "./AiChatSheet";
 import { AttendingBubbles } from "./AttendingBubbles";
 import { createMapHtml, type MapMarker, type MapPadding } from "./mapDocument";
@@ -47,22 +48,26 @@ type Coordinates = {
 const MIN_ZOOM = 3;
 const MAX_ZOOM = 15;
 const PANEL_GAP = 8;
+const FETCH_DEBOUNCE_MS = 300;
 
-const markers: MapMarker[] = visibleEvents.map((event) => ({
-  id: event.id,
-  latitude: event.latitude,
-  longitude: event.longitude,
-  title: event.title,
-  emoji: event.emoji,
-  hostName: event.hostName,
-  signedCount: event.signedCount,
-  capacity: event.capacity,
-  startsAtLabel: formatEventStart(event.startsAt),
-}));
+type Viewport = {
+  latitude: number;
+  longitude: number;
+  zoom: number;
+  bbox: string;
+};
+
+type NearbyQuery = {
+  lat: number;
+  lng: number;
+  zoom: number;
+  bbox?: string;
+};
 
 type MapMessage =
   | { type: "ready"; zoom: number }
   | { type: "zoom"; zoom: number; source?: "control" | "gesture" }
+  | { type: "viewport"; latitude: number; longitude: number; zoom: number; bbox: string }
   | { type: "zoom-blocked"; direction: "in" | "out" }
   | { type: "marker-press"; id: string }
   | { type: "map-press" }
@@ -87,10 +92,31 @@ export function MapScreen() {
   const [selectedMarker, setSelectedMarker] = useState<MapMarker | null>(null);
   const [eventsOpen, setEventsOpen] = useState(false);
   const [chatCoversEvents, setChatCoversEvents] = useState(false);
+  const [session, setSession] = useState<Session | null>(null);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [attending, setAttending] = useState<MeetupEvent[]>([]);
+  const [markers, setMarkers] = useState<MapMarker[]>([]);
+  const [viewport, setViewport] = useState<Viewport | null>(null);
+  const [eventsVersion, setEventsVersion] = useState(0);
   const locating = useRef(false);
   const mapFrameHeight = useRef(0);
   const mapReadyRef = useRef(false);
+  const aliveRef = useRef(true);
+  const authLock = useRef(false);
+  const sessionRef = useRef<Session | null>(null);
+  const markersRef = useRef<MapMarker[]>([]);
+  const nearbyQueryRef = useRef<NearbyQuery>({
+    lat: ARENA_CAMERA.latitude,
+    lng: ARENA_CAMERA.longitude,
+    zoom: ARENA_CAMERA.zoom,
+  });
   mapReadyRef.current = mapReady;
+  markersRef.current = markers;
+  sessionRef.current = session;
+  const nearbyQuery = nearbyQueryFor(viewport, userLocation);
+  const nearbyKey = nearbyKeyFor(viewport, userLocation);
+  nearbyQueryRef.current = nearbyQuery;
   const obstruction = sheetHeight || 168;
   const mapBottom = chatTop || obstruction;
 
@@ -202,6 +228,62 @@ export function MapScreen() {
     }
   }
 
+  const onSessionLost = useCallback((message: string) => {
+    if (sessionRef.current == null) {
+      return;
+    }
+    sessionRef.current = null;
+    setSession(null);
+    setAttending([]);
+    setMarkers([]);
+    setSelectedMarker(null);
+    setAuthError(message);
+    AccessibilityInfo.announceForAccessibility(message);
+  }, []);
+
+  const refreshEvents = useCallback(() => {
+    setEventsVersion((current) => current + 1);
+  }, []);
+
+  const runAuth = useCallback(async (action: "sign-in" | "sign-up") => {
+    if (authLock.current) {
+      return;
+    }
+    authLock.current = true;
+    setAuthBusy(true);
+    setAuthError(null);
+    AccessibilityInfo.announceForAccessibility(
+      action === "sign-in" ? "Signing in" : "Signing up",
+    );
+    try {
+      const next = action === "sign-in" ? await requestSignIn() : await requestSignUp();
+      if (!aliveRef.current) {
+        return;
+      }
+      setSession(next);
+      AccessibilityInfo.announceForAccessibility("Signed in");
+    } catch (error) {
+      if (!aliveRef.current) {
+        return;
+      }
+      const message = readableError(error);
+      setAuthError(message);
+      AccessibilityInfo.announceForAccessibility(message);
+    } finally {
+      authLock.current = false;
+      if (aliveRef.current) {
+        setAuthBusy(false);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
+
   useEffect(() => {
     let mounted = true;
 
@@ -255,7 +337,66 @@ export function MapScreen() {
       return;
     }
     run(`window.__styrtaMap.setMarkers(${JSON.stringify(markers)})`);
-  }, [mapReady]);
+  }, [mapReady, markers]);
+
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+    const token = session.access_token;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void getMyEvents(token)
+        .then((events) => {
+          if (cancelled) {
+            return;
+          }
+          setAttending(events.map(myEventToMeetup));
+        })
+        .catch((error: unknown) => {
+          if (cancelled) {
+            return;
+          }
+          if (isUnauthorized(error)) {
+            onSessionLost(readableError(error));
+          }
+        });
+    }, FETCH_DEBOUNCE_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [session, eventsVersion, onSessionLost]);
+
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+    const token = session.access_token;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      const query = nearbyQueryRef.current;
+      void getNearbyEvents(token, query)
+        .then((events) => {
+          if (cancelled) {
+            return;
+          }
+          setMarkers(events.map(nearbyToMarker));
+        })
+        .catch((error: unknown) => {
+          if (cancelled) {
+            return;
+          }
+          if (isUnauthorized(error)) {
+            onSessionLost(readableError(error));
+          }
+        });
+    }, FETCH_DEBOUNCE_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [session, nearbyKey, eventsVersion, onSessionLost]);
 
   useEffect(() => {
     if (!mapReady) {
@@ -335,6 +476,17 @@ export function MapScreen() {
       return;
     }
 
+    if (message.type === "viewport") {
+      setZoom(message.zoom);
+      setViewport({
+        latitude: message.latitude,
+        longitude: message.longitude,
+        zoom: message.zoom,
+        bbox: message.bbox,
+      });
+      return;
+    }
+
     if (message.type === "zoom-blocked") {
       AccessibilityInfo.announceForAccessibility(
         message.direction === "in"
@@ -349,7 +501,7 @@ export function MapScreen() {
     }
 
     if (message.type === "marker-press") {
-      const marker = markers.find((item) => item.id === message.id);
+      const marker = markersRef.current.find((item) => item.id === message.id);
       if (!marker) {
         return;
       }
@@ -358,7 +510,7 @@ export function MapScreen() {
         `window.__styrtaMap.centerOn(${marker.latitude}, ${marker.longitude}, ${reduceMotion ? "false" : "true"})`,
       );
       AccessibilityInfo.announceForAccessibility(
-        `${marker.title}, ${marker.startsAtLabel}, hosted by ${marker.hostName}, ${marker.signedCount} of ${marker.capacity} people`,
+        `${marker.title}, ${marker.startsAtLabel}, hosted by ${marker.hostName}, ${describeAttendance(marker.signedCount, marker.capacity)}`,
       );
       return;
     }
@@ -485,13 +637,24 @@ export function MapScreen() {
         </>
       ) : null}
       <AiChatSheet
+        accessToken={session?.access_token ?? null}
+        authBusy={authBusy}
+        authError={authError}
+        onSignIn={() => {
+          void runAuth("sign-in");
+        }}
+        onSignUp={() => {
+          void runAuth("sign-up");
+        }}
+        onSessionLost={onSessionLost}
+        onToolsFinished={refreshEvents}
         onHeightChange={setSheetHeight}
         onTopChange={setChatTop}
         onExpandedWithKeyboardChange={setChatCoversEvents}
         toggleRef={chatToggleRef}
       />
       <AttendingBubbles
-        events={attendingEvents}
+        events={session ? attending : []}
         expanded={eventsOpen}
         concealed={chatCoversEvents}
         onExpandedChange={setEventsOpen}
@@ -533,10 +696,103 @@ function parseMessage(data: string): MapMessage | null {
     if (!value || typeof value !== "object" || !("type" in value)) {
       return null;
     }
+    const record = value as Record<string, unknown>;
+    if (record.type === "viewport") {
+      if (
+        typeof record.latitude !== "number" ||
+        typeof record.longitude !== "number" ||
+        typeof record.zoom !== "number" ||
+        typeof record.bbox !== "string" ||
+        !Number.isFinite(record.latitude) ||
+        !Number.isFinite(record.longitude) ||
+        !Number.isFinite(record.zoom)
+      ) {
+        return null;
+      }
+      return {
+        type: "viewport",
+        latitude: record.latitude,
+        longitude: record.longitude,
+        zoom: record.zoom,
+        bbox: record.bbox,
+      };
+    }
     return value as MapMessage;
   } catch {
     return null;
   }
+}
+
+function nearbyQueryFor(viewport: Viewport | null, userLocation: Coordinates | null): NearbyQuery {
+  if (viewport) {
+    return {
+      lat: viewport.latitude,
+      lng: viewport.longitude,
+      zoom: viewport.zoom,
+      bbox: viewport.bbox,
+    };
+  }
+  if (userLocation) {
+    return {
+      lat: userLocation.latitude,
+      lng: userLocation.longitude,
+      zoom: USER_ZOOM,
+    };
+  }
+  return {
+    lat: ARENA_CAMERA.latitude,
+    lng: ARENA_CAMERA.longitude,
+    zoom: ARENA_CAMERA.zoom,
+  };
+}
+
+function nearbyKeyFor(viewport: Viewport | null, userLocation: Coordinates | null): string {
+  if (viewport) {
+    return `${viewport.latitude},${viewport.longitude},${viewport.zoom},${viewport.bbox}`;
+  }
+  if (userLocation) {
+    return `user:${userLocation.latitude},${userLocation.longitude}`;
+  }
+  return "arena";
+}
+
+function myEventToMeetup(event: MyEvent): MeetupEvent {
+  return {
+    id: event.id,
+    emoji: event.emoji,
+    title: event.title,
+    signedCount: event.signed_count,
+    capacity: event.capacity,
+    latitude: event.latitude,
+    longitude: event.longitude,
+    hostName: event.host_name,
+    startsAt: event.starts_at,
+  };
+}
+
+function nearbyToMarker(event: NearbyEvent): MapMarker {
+  return {
+    id: event.id,
+    latitude: event.latitude,
+    longitude: event.longitude,
+    title: event.title,
+    emoji: event.emoji,
+    hostName: event.host_name,
+    signedCount: event.signed_count,
+    capacity: event.capacity,
+    startsAtLabel: formatEventStart(event.starts_at),
+  };
+}
+
+function readableError(error: unknown): string {
+  if (error instanceof ApiError || error instanceof Error) {
+    return error.message;
+  }
+  return "Something went wrong.";
+}
+
+function isUnauthorized(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 401;
 }
 
 const styles = StyleSheet.create({

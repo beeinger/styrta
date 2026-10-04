@@ -8,7 +8,12 @@ import {
   View,
 } from "react-native";
 
-import { formatEventStart, type MeetupEvent } from "../data/events";
+import {
+  describeAttendance,
+  formatAttendance,
+  formatEventStart,
+  type MeetupEvent,
+} from "../data/events";
 
 type AttendingBubblesProps = {
   events: MeetupEvent[];
@@ -162,6 +167,7 @@ type EventRowProps = {
 
 function EventRow({ event, last, onFocus, onHide }: EventRowProps) {
   const when = formatEventStart(event.startsAt);
+  const attendance = describeAttendance(event.signedCount, event.capacity);
   return (
     <View style={[styles.row, !last && styles.rowDivider]}>
       <Text
@@ -174,14 +180,14 @@ function EventRow({ event, last, onFocus, onHide }: EventRowProps) {
       </Text>
       <View
         accessible
-        accessibilityLabel={`${event.hostName}, ${event.title}, ${when}, ${event.signedCount} of ${event.capacity} people`}
+        accessibilityLabel={`${event.hostName}, ${event.title}, ${when}, ${attendance}`}
         style={styles.details}
       >
         <Text style={styles.host}>{event.hostName}</Text>
         <Text style={styles.title}>{event.title}</Text>
         <Text style={styles.time}>{when}</Text>
         <Text style={styles.count}>
-          {event.signedCount}/{event.capacity}
+          {formatAttendance(event.signedCount, event.capacity)}
         </Text>
       </View>
       <View style={styles.actions}>
