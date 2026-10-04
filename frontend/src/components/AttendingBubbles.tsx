@@ -108,11 +108,7 @@ export function AttendingBubbles({
   return (
     <View
       pointerEvents="box-none"
-      style={[
-        styles.anchor,
-        { top, start, end },
-        expanded ? { bottom } : null,
-      ]}
+      style={[styles.anchor, { top, start, end }, expanded ? { bottom } : null]}
     >
       {expanded ? (
         <View
@@ -207,7 +203,9 @@ function EventRow({ event, onFocus, onHide }: EventRowProps) {
   const place = event.placeName?.trim() ?? "";
   const hosting = event.hostedByMe === true || isHostedEvent(event.id);
   const role = hosting ? "You are hosting" : "You are attending";
-  const summary = [event.title, when, place, attendance].filter(Boolean).join(", ");
+  const summary = [event.title, when, place, attendance]
+    .filter(Boolean)
+    .join(", ");
   return (
     <View style={styles.card}>
       <View
@@ -256,8 +254,16 @@ function EventRow({ event, onFocus, onHide }: EventRowProps) {
           name="pin"
           onPress={onFocus}
         />
-        <RowButton label={`Hide ${event.title}`} name="check" onPress={onHide} />
-        <RowButton label={`Remove ${event.title}`} name="close" onPress={onHide} />
+        <RowButton
+          label={`Hide ${event.title}`}
+          name="check"
+          onPress={onHide}
+        />
+        <RowButton
+          label={`Remove ${event.title}`}
+          name="close"
+          onPress={onHide}
+        />
       </View>
     </View>
   );
@@ -275,7 +281,10 @@ function RowButton({ label, name, onPress }: RowButtonProps) {
       accessibilityRole="button"
       accessibilityLabel={label}
       onPress={onPress}
-      style={({ pressed }) => [styles.rowButton, pressed && styles.rowButtonPressed]}
+      style={({ pressed }) => [
+        styles.rowButton,
+        pressed && styles.rowButtonPressed,
+      ]}
     >
       <Icon name={name} size={18} color={colors.ink} />
     </Pressable>
@@ -326,7 +335,8 @@ const styles = StyleSheet.create({
   },
   listContent: {
     gap: space.sm,
-    paddingBottom: space.sm,
+    paddingTop: space.sm,
+    paddingBottom: space.md,
     width: "100%",
   },
   card: {
@@ -335,7 +345,22 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     padding: space.md,
     gap: space.md,
-    ...glassShadow,
+    boxShadow: [
+      {
+        offsetX: 0,
+        offsetY: -12,
+        blurRadius: 14,
+        spreadDistance: -18,
+        color: "rgba(28, 28, 30, 0.18)",
+      },
+      {
+        offsetX: 0,
+        offsetY: 12,
+        blurRadius: 14,
+        spreadDistance: -18,
+        color: "rgba(28, 28, 30, 0.18)",
+      },
+    ],
   },
   cardMain: {
     flexDirection: "row",

@@ -33,7 +33,11 @@ import {
   spokenReplySource,
   type SpeechClip,
 } from "../api/client";
-import { ApiError, type ChatStreamEvent, type HistoryMessage } from "../api/types";
+import {
+  ApiError,
+  type ChatStreamEvent,
+  type HistoryMessage,
+} from "../api/types";
 import { Icon } from "../icons";
 import { chatCornerRadius, colors, fonts, space } from "../theme";
 
@@ -225,7 +229,11 @@ export function AiChatSheet({
     setMessages((current) => current.filter((message) => message.id !== id));
   };
 
-  const writeAssistant = (turnId: string, text: string, mode: "append" | "replace") => {
+  const writeAssistant = (
+    turnId: string,
+    text: string,
+    mode: "append" | "replace",
+  ) => {
     if (!mountedRef.current) {
       return;
     }
@@ -235,7 +243,9 @@ export function AiChatSheet({
         (message) => message.role === "assistant" && message.turnId === turnId,
       );
       if (index === -1) {
-        index = current.findIndex((message) => message.pending && message.turnId == null);
+        index = current.findIndex(
+          (message) => message.pending && message.turnId == null,
+        );
       }
       if (index === -1) {
         return [...current, { id, role: "assistant", text, turnId }];
@@ -335,7 +345,8 @@ export function AiChatSheet({
         if (repliedTurns.current.has(turnId)) {
           return;
         }
-        const message = lastError == null ? TIMEOUT_LINE : readableError(lastError);
+        const message =
+          lastError == null ? TIMEOUT_LINE : readableError(lastError);
         writeAssistant(turnId, message, "replace");
         AccessibilityInfo.announceForAccessibility(message);
       } finally {
@@ -503,7 +514,9 @@ export function AiChatSheet({
           return;
         }
         setMessages((current) => {
-          const extras = current.filter((message) => message.local || message.turnId);
+          const extras = current.filter(
+            (message) => message.local || message.turnId,
+          );
           return [...history.map(historyToMessage), ...extras];
         });
       })
@@ -605,7 +618,11 @@ export function AiChatSheet({
     void deliverMessage(token, text, thinkingId);
   };
 
-  async function deliverMessage(token: string, text: string, thinkingId: string) {
+  async function deliverMessage(
+    token: string,
+    text: string,
+    thinkingId: string,
+  ) {
     try {
       const accepted = await postMessage(token, text);
       if (!mountedRef.current || accessTokenRef.current !== token) {
@@ -741,7 +758,9 @@ export function AiChatSheet({
       void (async () => {
         try {
           const duration = recorder.getStatus().durationMillis;
-          const stopped = (await recorder.stop()) as unknown as { url?: string | null };
+          const stopped = (await recorder.stop()) as unknown as {
+            url?: string | null;
+          };
           const stoppedUrl = stopped?.url;
           const uri =
             typeof stoppedUrl === "string" && stoppedUrl.length > 0
@@ -849,7 +868,9 @@ export function AiChatSheet({
         />
       ) : null
     ) : (
-      messages.map((message) => <ChatBubble key={message.id} message={message} />)
+      messages.map((message) => (
+        <ChatBubble key={message.id} message={message} />
+      ))
     );
   const submitAuth = () => {
     const email = authEmail.trim();
@@ -894,7 +915,9 @@ export function AiChatSheet({
       return;
     }
     const headerHeightForInset = signedIn ? header : 0;
-    onHeightChange(headerHeightForInset + composer + bottomInset + CARD_PADDING_TOP);
+    onHeightChange(
+      headerHeightForInset + composer + bottomInset + CARD_PADDING_TOP,
+    );
   };
 
   const publishTop = (height: number) => {
@@ -914,7 +937,10 @@ export function AiChatSheet({
   }, [keyboardInset, onTopChange]);
 
   return (
-    <View pointerEvents="box-none" style={[styles.dock, { bottom: keyboardInset }]}>
+    <View
+      pointerEvents="box-none"
+      style={[styles.dock, { bottom: keyboardInset }]}
+    >
       <View
         onLayout={(event) => {
           publishTop(event.nativeEvent.layout.height);
@@ -936,7 +962,9 @@ export function AiChatSheet({
           >
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={voiceMuted ? "Unmute assistant voice" : "Mute assistant voice"}
+              accessibilityLabel={
+                voiceMuted ? "Unmute assistant voice" : "Mute assistant voice"
+              }
               accessibilityHint={
                 voiceMuted
                   ? "Assistant replies stay on screen."
@@ -998,7 +1026,11 @@ export function AiChatSheet({
             </ScrollView>
             <LinearGradient
               pointerEvents="none"
-              colors={[colors.tertiaryWash, colors.tertiaryWash, colors.tertiaryWashFade]}
+              colors={[
+                colors.tertiaryWash,
+                colors.tertiaryWash,
+                colors.tertiaryWashFade,
+              ]}
               locations={[0, 0.42, 1]}
               style={styles.transcriptFade}
             />
@@ -1011,11 +1043,17 @@ export function AiChatSheet({
             setComposerPad(height);
             publishMapClearance(headerHeight.current, height);
           }}
-          style={overlayChat ? [styles.composer, { paddingBottom: bottomInset }] : styles.composerFlow}
+          style={
+            overlayChat
+              ? [styles.composer, { paddingBottom: bottomInset }]
+              : styles.composerFlow
+          }
         >
           {signedIn ? (
             <>
-              {chatError ? <Text style={styles.errorText}>{chatError}</Text> : null}
+              {chatError ? (
+                <Text style={styles.errorText}>{chatError}</Text>
+              ) : null}
               {!expanded && awaitingReply ? (
                 <Text
                   style={styles.pendingStatus}
@@ -1029,7 +1067,11 @@ export function AiChatSheet({
                 <Pressable
                   accessibilityRole="button"
                   accessibilityLabel={
-                    sendingVoice ? "Sending" : listening ? "Tap to stop" : "Tap to speak"
+                    sendingVoice
+                      ? "Sending"
+                      : listening
+                        ? "Tap to stop"
+                        : "Tap to speak"
                   }
                   accessibilityHint={
                     listening
@@ -1052,12 +1094,19 @@ export function AiChatSheet({
                 >
                   <SoundWave active={listening} />
                   <Text
-                    style={[styles.speakLabel, listening && styles.speakLabelListening]}
+                    style={[
+                      styles.speakLabel,
+                      listening && styles.speakLabelListening,
+                    ]}
                     maxFontSizeMultiplier={1.8}
                     importantForAccessibility="no"
                     accessibilityElementsHidden
                   >
-                    {sendingVoice ? "Sending" : listening ? "Tap to stop" : "Tap to speak"}
+                    {sendingVoice
+                      ? "Sending"
+                      : listening
+                        ? "Tap to stop"
+                        : "Tap to speak"}
                   </Text>
                 </Pressable>
                 {listening ? (
@@ -1092,7 +1141,9 @@ export function AiChatSheet({
             <ScrollView
               keyboardShouldPersistTaps="handled"
               bounces={false}
-              style={{ maxHeight: Math.max(280, windowHeight - keyboardInset - 24) }}
+              style={{
+                maxHeight: Math.max(280, windowHeight - keyboardInset - 24),
+              }}
               contentContainerStyle={styles.authActions}
             >
               <View style={styles.authIntro}>
@@ -1135,8 +1186,12 @@ export function AiChatSheet({
                   secureTextEntry
                   autoCapitalize="none"
                   autoCorrect={false}
-                  autoComplete={authMode === "sign-up" ? "new-password" : "password"}
-                  textContentType={authMode === "sign-up" ? "newPassword" : "password"}
+                  autoComplete={
+                    authMode === "sign-up" ? "new-password" : "password"
+                  }
+                  textContentType={
+                    authMode === "sign-up" ? "newPassword" : "password"
+                  }
                   accessibilityLabel="Hasło"
                   placeholder="••••••••"
                   placeholderTextColor={colors.inkMuted}
@@ -1166,7 +1221,9 @@ export function AiChatSheet({
               ) : null}
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel={authMode === "sign-up" ? "Sign Up" : "Sign In"}
+                accessibilityLabel={
+                  authMode === "sign-up" ? "Sign Up" : "Sign In"
+                }
                 accessibilityState={{ disabled: authBusy, busy: authBusy }}
                 disabled={authBusy}
                 onPress={submitAuth}
@@ -1194,14 +1251,19 @@ export function AiChatSheet({
                 }
                 disabled={authBusy}
                 onPress={() => {
-                  setAuthMode((current) => (current === "sign-in" ? "sign-up" : "sign-in"));
+                  setAuthMode((current) =>
+                    current === "sign-in" ? "sign-up" : "sign-in",
+                  );
                   setAuthPassword("");
                   setAuthPasswordAgain("");
                   setFormError(null);
                 }}
                 style={styles.authSwitch}
               >
-                <Text style={styles.authSwitchLabel} maxFontSizeMultiplier={1.8}>
+                <Text
+                  style={styles.authSwitchLabel}
+                  maxFontSizeMultiplier={1.8}
+                >
                   {authMode === "sign-up"
                     ? "Already have an account? Sign in"
                     : "Need an account? Sign up"}
@@ -1221,14 +1283,17 @@ type MessagePart =
 
 function welcomeLine(userNick: string): string {
   const nick = userNick.trim();
-  const greeting = nick.length > 0 ? `Witam na Styrcie ${nick}!` : "Witam na Styrcie!";
+  const greeting =
+    nick.length > 0 ? `Witam na Styrcie ${nick}!` : "Witam na Styrcie!";
   return `${greeting} Ja jestem Jadzia i chętnie pomogę z rozwiązaniem Twoich problemów lub znalezieniem spotkań towarzyskich w okolicy.`;
 }
 
 function ChatBubble({ message }: { message: ChatMessage }) {
   const assistant = message.role === "assistant";
   const parts =
-    assistant && !message.pending ? linkParts(message.text) : [{ kind: "text" as const, text: message.text }];
+    assistant && !message.pending
+      ? linkParts(message.text)
+      : [{ kind: "text" as const, text: message.text }];
   const links = parts.filter((part) => part.kind === "link");
   const [copied, setCopied] = useState(false);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1266,7 +1331,11 @@ function ChatBubble({ message }: { message: ChatMessage }) {
   return (
     <View
       accessibilityLiveRegion={message.pending ? "polite" : undefined}
-      style={[styles.bubble, assistant && styles.assistantBubble, !message.pending && styles.bubbleWithCopy]}
+      style={[
+        styles.bubble,
+        assistant && styles.assistantBubble,
+        !message.pending && styles.bubbleWithCopy,
+      ]}
     >
       <Text
         style={[
@@ -1281,7 +1350,9 @@ function ChatBubble({ message }: { message: ChatMessage }) {
           label: `Open ${link.label}`,
         }))}
         onAccessibilityAction={(event) => {
-          const index = Number(event.nativeEvent.actionName.replace("open-link-", ""));
+          const index = Number(
+            event.nativeEvent.actionName.replace("open-link-", ""),
+          );
           const link = links[index];
           if (link) void openExternalLink(link.href);
         }}
@@ -1310,7 +1381,10 @@ function ChatBubble({ message }: { message: ChatMessage }) {
           accessibilityHint="Copies this message."
           onPress={() => void copyMessage()}
           hitSlop={space.sm}
-          style={({ pressed }) => [styles.copyButton, pressed && styles.copyPressed]}
+          style={({ pressed }) => [
+            styles.copyButton,
+            pressed && styles.copyPressed,
+          ]}
         >
           <Icon name={copied ? "check" : "copy"} size={13} color={colors.ink} />
         </Pressable>
@@ -1321,7 +1395,8 @@ function ChatBubble({ message }: { message: ChatMessage }) {
 
 function linkParts(source: string): MessagePart[] {
   const parts: MessagePart[] = [];
-  const pattern = /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|https?:\/\/[^\s<>]+|www\.[^\s<>]+/gi;
+  const pattern =
+    /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|https?:\/\/[^\s<>]+|www\.[^\s<>]+/gi;
   let cursor = 0;
   for (const match of source.matchAll(pattern)) {
     const index = match.index ?? 0;
@@ -1386,7 +1461,10 @@ function countChar(value: string, char: string): number {
 function isHttpUrl(value: string): boolean {
   try {
     const url = new URL(value);
-    return (url.protocol === "http:" || url.protocol === "https:") && url.hostname.length > 0;
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") &&
+      url.hostname.length > 0
+    );
   } catch {
     return false;
   }
@@ -1463,7 +1541,9 @@ function recorderReleased(error: unknown): boolean {
 function audioSession(allowsRecording: boolean) {
   return {
     playsInSilentMode: true,
-    interruptionMode: allowsRecording ? ("doNotMix" as const) : ("duckOthers" as const),
+    interruptionMode: allowsRecording
+      ? ("doNotMix" as const)
+      : ("duckOthers" as const),
     allowsRecording,
     shouldPlayInBackground: false,
     shouldRouteThroughEarpiece: false,

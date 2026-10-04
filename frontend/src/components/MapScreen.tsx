@@ -14,11 +14,29 @@ import {
 import { BlurTargetView, BlurView } from "expo-blur";
 import * as Location from "expo-location";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { WebView, type WebViewHandle, type WebViewMessageEvent } from "./MapWebView";
+import {
+  WebView,
+  type WebViewHandle,
+  type WebViewMessageEvent,
+} from "./MapWebView";
 
-import { getMyEvents, getNearbyEvents, signIn as requestSignIn, signUp as requestSignUp } from "../api/client";
-import { ApiError, type MyEvent, type NearbyEvent, type Session } from "../api/types";
-import { describeAttendance, formatEventStart, type MeetupEvent } from "../data/events";
+import {
+  getMyEvents,
+  getNearbyEvents,
+  signIn as requestSignIn,
+  signUp as requestSignUp,
+} from "../api/client";
+import {
+  ApiError,
+  type MyEvent,
+  type NearbyEvent,
+  type Session,
+} from "../api/types";
+import {
+  describeAttendance,
+  formatEventStart,
+  type MeetupEvent,
+} from "../data/events";
 import { demoLocation } from "../demoLocation";
 import { chatCornerRadius, colors, fonts, space } from "../theme";
 import { AiChatSheet } from "./AiChatSheet";
@@ -68,7 +86,13 @@ type NearbyQuery = {
 type MapMessage =
   | { type: "ready"; zoom: number }
   | { type: "zoom"; zoom: number; source?: "control" | "gesture" }
-  | { type: "viewport"; latitude: number; longitude: number; zoom: number; bbox: string }
+  | {
+      type: "viewport";
+      latitude: number;
+      longitude: number;
+      zoom: number;
+      bbox: string;
+    }
   | { type: "zoom-blocked"; direction: "in" | "out" }
   | { type: "marker-press"; id: string }
   | { type: "map-press" }
@@ -367,7 +391,9 @@ export function MapScreen() {
           if (cancelled) {
             return;
           }
-          setAttending(events.map((event) => myEventToMeetup(event, session.id)));
+          setAttending(
+            events.map((event) => myEventToMeetup(event, session.id)),
+          );
         })
         .catch((error: unknown) => {
           if (cancelled) {
@@ -566,79 +592,76 @@ export function MapScreen() {
         style={StyleSheet.absoluteFill}
         pointerEvents={eventsOpen && !chatCoversEvents ? "none" : "auto"}
       >
-      {html ? (
-        <WebView
-          ref={webViewRef}
-          source={{ html, baseUrl: "https://localhost" }}
-          style={[
-            styles.map,
-            { bottom: mapFrameBottom },
-          ]}
-          onLayout={(event) => {
-            const next = Math.round(event.nativeEvent.layout.height);
-            if (next === mapFrameHeight.current) {
+        {html ? (
+          <WebView
+            ref={webViewRef}
+            source={{ html, baseUrl: "https://localhost" }}
+            style={[styles.map, { bottom: mapFrameBottom }]}
+            onLayout={(event) => {
+              const next = Math.round(event.nativeEvent.layout.height);
+              if (next === mapFrameHeight.current) {
+                return;
+              }
+              mapFrameHeight.current = next;
+              if (!mapReadyRef.current) {
+                return;
+              }
+              run(
+                `window.__styrtaMap.resize(${reduceMotionRef.current ? "false" : "true"})`,
+              );
+            }}
+            originWhitelist={["*"]}
+            javaScriptEnabled
+            domStorageEnabled
+            scrollEnabled={false}
+            bounces={false}
+            overScrollMode="never"
+            scalesPageToFit={false}
+            setBuiltInZoomControls={false}
+            setDisplayZoomControls={false}
+            showsHorizontalScrollIndicator={false}
+            showsVerticalScrollIndicator={false}
+            allowsLinkPreview={false}
+            textZoom={100}
+            androidLayerType="hardware"
+            accessibilityLabel="Map"
+            accessibilityHint="Pan with one finger to move the map. Pinch with two fingers to zoom, or use the zoom buttons."
+            onMessage={onMessage}
+            onError={() => setMapFailed(true)}
+            onShouldStartLoadWithRequest={(request) =>
+              request.navigationType !== "click"
+            }
+          />
+        ) : null}
+        {mapReady ? null : (
+          <View style={styles.status} pointerEvents="none">
+            <ActivityIndicator color="#1C1C1E" size="large" />
+          </View>
+        )}
+        {mapFailed ? (
+          <View style={styles.status} pointerEvents="none">
+            <Text style={styles.statusText}>
+              The map could not load. Check your internet connection and reopen
+              the app.
+            </Text>
+          </View>
+        ) : null}
+        <MapZoomControls
+          bottom={mapBottom + 12}
+          canZoomIn={mapReady && zoom < MAX_ZOOM - 0.01}
+          canZoomOut={mapReady && zoom > MIN_ZOOM + 0.01}
+          canCenter={mapReady}
+          onZoomIn={() => zoomBy("in")}
+          onZoomOut={() => zoomBy("out")}
+          onCenter={() => {
+            if (userLocation) {
+              moveMapTo(userLocation, true);
+              void centerOnUser(true, false);
               return;
             }
-            mapFrameHeight.current = next;
-            if (!mapReadyRef.current) {
-              return;
-            }
-            run(
-              `window.__styrtaMap.resize(${reduceMotionRef.current ? "false" : "true"})`,
-            );
+            void centerOnUser(true, true);
           }}
-          originWhitelist={["*"]}
-          javaScriptEnabled
-          domStorageEnabled
-          scrollEnabled={false}
-          bounces={false}
-          overScrollMode="never"
-          scalesPageToFit={false}
-          setBuiltInZoomControls={false}
-          setDisplayZoomControls={false}
-          showsHorizontalScrollIndicator={false}
-          showsVerticalScrollIndicator={false}
-          allowsLinkPreview={false}
-          textZoom={100}
-          androidLayerType="hardware"
-          accessibilityLabel="Map"
-          accessibilityHint="Pan with one finger to move the map. Pinch with two fingers to zoom, or use the zoom buttons."
-          onMessage={onMessage}
-          onError={() => setMapFailed(true)}
-          onShouldStartLoadWithRequest={(request) =>
-            request.navigationType !== "click"
-          }
         />
-      ) : null}
-      {mapReady ? null : (
-        <View style={styles.status} pointerEvents="none">
-          <ActivityIndicator color="#1C1C1E" size="large" />
-        </View>
-      )}
-      {mapFailed ? (
-        <View style={styles.status} pointerEvents="none">
-          <Text style={styles.statusText}>
-            The map could not load. Check your internet connection and reopen
-            the app.
-          </Text>
-        </View>
-      ) : null}
-      <MapZoomControls
-        bottom={mapBottom + 12}
-        canZoomIn={mapReady && zoom < MAX_ZOOM - 0.01}
-        canZoomOut={mapReady && zoom > MIN_ZOOM + 0.01}
-        canCenter={mapReady}
-        onZoomIn={() => zoomBy("in")}
-        onZoomOut={() => zoomBy("out")}
-        onCenter={() => {
-          if (userLocation) {
-            moveMapTo(userLocation, true);
-            void centerOnUser(true, false);
-            return;
-          }
-          void centerOnUser(true, true);
-        }}
-      />
       </BlurTargetView>
       {eventsOpen && !chatCoversEvents ? (
         <>
@@ -685,9 +708,9 @@ export function MapScreen() {
         concealed={chatCoversEvents}
         onExpandedChange={setEventsOpen}
         top={insets.top + space.md}
-        bottom={mapBottom + (eventsOpen ? 72 : space.sm)}
+        bottom={mapBottom + space.md}
         start={Math.max(space.lg, startInset)}
-        end={eventsOpen ? 72 : space.lg}
+        end={space.lg}
         onFocusEvent={focusEvent}
       />
     </View>
@@ -749,7 +772,10 @@ function parseMessage(data: string): MapMessage | null {
   }
 }
 
-function nearbyQueryFor(viewport: Viewport | null, userLocation: Coordinates | null): NearbyQuery {
+function nearbyQueryFor(
+  viewport: Viewport | null,
+  userLocation: Coordinates | null,
+): NearbyQuery {
   if (viewport) {
     return {
       lat: viewport.latitude,
@@ -772,7 +798,10 @@ function nearbyQueryFor(viewport: Viewport | null, userLocation: Coordinates | n
   };
 }
 
-function nearbyKeyFor(viewport: Viewport | null, userLocation: Coordinates | null): string {
+function nearbyKeyFor(
+  viewport: Viewport | null,
+  userLocation: Coordinates | null,
+): string {
   if (viewport) {
     return `${viewport.latitude},${viewport.longitude},${viewport.zoom},${viewport.bbox}`;
   }
